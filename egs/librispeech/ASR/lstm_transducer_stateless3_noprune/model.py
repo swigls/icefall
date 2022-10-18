@@ -66,19 +66,21 @@ class Transducer(nn.Module):
         self.decoder = decoder
         self.joiner = joiner
 
+        '''
         self.simple_am_proj = ScaledLinear(
             encoder_dim, vocab_size, initial_speed=0.5
         )
         self.simple_lm_proj = ScaledLinear(decoder_dim, vocab_size)
+        '''
 
     def forward(
         self,
         x: torch.Tensor,
         x_lens: torch.Tensor,
         y: k2.RaggedTensor,
-        prune_range: int = 5,
-        am_scale: float = 0.0,
-        lm_scale: float = 0.0,
+        prune_range: int = 5,  # unused
+        am_scale: float = 0.0,  # unused
+        lm_scale: float = 0.0,  # unused
         warmup: float = 1.0,
         reduction: str = "sum",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -151,6 +153,7 @@ class Transducer(nn.Module):
         boundary[:, 2] = y_lens
         boundary[:, 3] = x_lens
 
+        '''
         lm = self.simple_lm_proj(decoder_out)
         am = self.simple_am_proj(encoder_out)
 
@@ -198,5 +201,23 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction=reduction,
             )
+        '''
+
+        logits = self.joiner(
+            encoder_out, 
+            decoder_out,
+        )
+
+        with torch.cuda.amp.autocast(enabled=False):
+            pruned_loss = k2.rnnt_loss(
+                logits=logits.float(),
+                symbols=y_padded,
+                termination_symbol=blank_id,
+                boundary=boundary,
+                reduction=reduction,
+                #py_add=logp_gauss,
+                #py_add_lambda=1.0,
+            )
+            simple_loss = pruned_loss
 
         return (simple_loss, pruned_loss)
