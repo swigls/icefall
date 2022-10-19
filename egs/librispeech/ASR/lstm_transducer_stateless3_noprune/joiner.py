@@ -42,35 +42,41 @@ class Joiner(nn.Module):
         self,
         encoder_out: torch.Tensor,
         decoder_out: torch.Tensor,
-        project_input: bool = True,  # unused
+        project_input: bool = True,
     ) -> torch.Tensor:
         """
         Args:
           encoder_out:
-            Output from the encoder. Its shape is (N, T, self.encdoer_dim).
+            Output from the encoder. Its shape is (N, T, self.encoder_dim)
+            or (N, T, 1, self.joiner_dim).
           decoder_out:
-            Output from the decoder. Its shape is (N, U, self.decoder_dim).
+            Output from the decoder. Its shape is (N, U, self.decoder_dim)
+            or (N, 1, U, self.joiner_dim).
         Returns:
           Return a tensor of shape (N, T, U, C).
         """
         assert encoder_out.size(0) == decoder_out.size(0)
-        assert encoder_out.size(2) == self.encoder_dim
-        assert decoder_out.size(2) == self.decoder_dim
+        assert encoder_out.size(-1) == self.encoder_dim
+        assert decoder_out.size(-1) == self.decoder_dim
+        assert encoder_out.ndim in (3, 4)
+        assert encoder_out.ndim == decoder_out.ndim
         #if not is_jit_tracing():
         #    assert encoder_out.ndim == decoder_out.ndim
         #    assert encoder_out.ndim in (2, 4)
         #    assert encoder_out.shape == decoder_out.shape
 
-        encoder_out = encoder_out.unsqueeze(2)  # (N, T, 1, E)
-        decoder_out = decoder_out.unsqueeze(1)  # (N, 1, U, D)
+        if encoder_out.ndim == 3:
+            encoder_out = encoder_out.unsqueeze(2)  # (N, T, 1, E)
+            decoder_out = decoder_out.unsqueeze(1)  # (N, 1, U, D)
 
-        encoder_out = self.encoder_proj(encoder_out)  # (N, T, 1, J)
-        decoder_out = self.decoder_proj(decoder_out)  # (N, T, 1, J)
+        if project_input:
+            encoder_out = self.encoder_proj(encoder_out)  # (N, T, 1, J)
+            decoder_out = self.decoder_proj(decoder_out)  # (N, 1, U, J)
 
-        x = encoder_out + decoder_out  # (N, T, U, V)
+        x = encoder_out + decoder_out  # (N, T, U, J)
 
         activations = torch.tanh(x)
 
-        logits = self.output_linear(activations)
+        logits = self.output_linear(activations)  # (N, T, U, V)
 
         return logits

@@ -9,8 +9,7 @@ dir=$( dirname -- "$0"; )
   --full-libri 1 \
   --use-fp16 1 \
   --enable-musan 0 \
-  --simple-loss-scale 0.0 \
-  --max-duration 100 \
+  --max-duration 250 \
   --master-port 12325 \
   --num-encoder-layers 12 \
   --grad-norm-threshold 25.0 \
