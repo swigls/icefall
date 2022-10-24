@@ -1,9 +1,9 @@
 dir=$( dirname -- "$0"; )
 
-for decoding_method in greedy_search beam_search; do
+for decoding_method in greedy_search fast_beam_search modified_beam_search; do
   ./$dir/decode.py \
-    --epoch 40 \
-    --avg 15 \
+    --epoch 2 \
+    --avg 1 \
     --exp-dir $dir/exp \
     --max-duration 300 \
     --num-encoder-layers 12 \

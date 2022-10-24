@@ -203,9 +203,12 @@ class Transducer(nn.Module):
             )
         '''
 
-        logits = self.joiner(
-            encoder_out, 
+        # x_logp: [N, T, S+1]
+        logits, x_logp = self.joiner(
+            encoder_out,
             decoder_out,
+            x,
+            x_lens
         )
 
         with torch.cuda.amp.autocast(enabled=False):
@@ -215,6 +218,7 @@ class Transducer(nn.Module):
                 termination_symbol=blank_id,
                 boundary=boundary,
                 reduction=reduction,
+                py_add=x_logp,
             )
             simple_loss = pruned_loss
 
