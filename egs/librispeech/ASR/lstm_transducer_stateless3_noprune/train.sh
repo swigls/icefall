@@ -4,7 +4,7 @@ dir=$( dirname -- "$0"; )
 ./$dir/train.py \
   --world-size 5 \
   --num-epochs 40 \
-  --start-epoch 1 \
+  --start-epoch 38 \
   --exp-dir $dir/exp \
   --full-libri 1 \
   --use-fp16 1 \

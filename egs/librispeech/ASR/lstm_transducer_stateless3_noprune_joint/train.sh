@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES="1,2,3,4,5"
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
@@ -9,8 +9,9 @@ dir=$( dirname -- "$0"; )
   --full-libri 1 \
   --use-fp16 1 \
   --enable-musan 0 \
-  --max-duration 250 \
+  --max-duration 150 \
   --master-port 12325 \
   --num-encoder-layers 12 \
   --grad-norm-threshold 25.0 \
-  --rnn-hidden-size 1024
+  --rnn-hidden-size 1024 \
+  --kmeans-model $dir/exp/kmeans_500.npy

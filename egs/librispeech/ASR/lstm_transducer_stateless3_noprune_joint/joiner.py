@@ -21,6 +21,8 @@ from scaling import ScaledLinear
 # from icefall.utils import is_jit_tracing
 
 from pronouncer import Pronouncer
+from typing import Optional
+
 
 class Joiner(nn.Module):
     def __init__(
@@ -29,6 +31,7 @@ class Joiner(nn.Module):
         decoder_dim: int,
         joiner_dim: int,
         vocab_size: int,
+        kmeans_model: str,
     ):
         super().__init__()
 
@@ -36,9 +39,9 @@ class Joiner(nn.Module):
         self.decoder_proj = ScaledLinear(decoder_dim, joiner_dim)
         self.output_linear = ScaledLinear(joiner_dim, vocab_size)
 
-        self.pronouncer_input_dim = joinder_dim
         self.pronouncer = Pronouncer(
-            self.pronouncer_input_dim,
+            joiner_dim,
+            kmeans_model=kmeans_model,
         )
 
         self.encoder_dim = encoder_dim
@@ -49,7 +52,8 @@ class Joiner(nn.Module):
         encoder_out: torch.Tensor,
         decoder_out: torch.Tensor,
         x: torch.Tensor,
-        x_lens: torch.Tensor,
+        x_lens: Optional[torch.Tensor] = None,
+        h_lens: Optional[torch.Tensor] = None,
         project_input: bool = True,
     ) -> torch.Tensor:
         """
@@ -99,6 +103,7 @@ class Joiner(nn.Module):
         x_logp = self.pronouncer(
             activations,
             x,
-            x_lens
+            x_lens,
+            h_lens,
         )
         return logits, x_logp

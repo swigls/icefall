@@ -25,6 +25,8 @@ from scaling import ScaledLinear
 
 from icefall.utils import add_sos
 
+import logging
+
 
 class Transducer(nn.Module):
     """It implements https://arxiv.org/pdf/1211.3711.pdf
@@ -126,8 +128,8 @@ class Transducer(nn.Module):
 
         assert x.size(0) == x_lens.size(0) == y.dim0
 
-        encoder_out, x_lens, _ = self.encoder(x, x_lens, warmup=warmup)
-        assert torch.all(x_lens > 0)
+        encoder_out, h_lens, _ = self.encoder(x, x_lens, warmup=warmup)
+        assert torch.all(h_lens > 0)
 
         # Now for the decoder, i.e., the prediction network
         row_splits = y.shape.row_splits(1)
@@ -151,7 +153,7 @@ class Transducer(nn.Module):
             (x.size(0), 4), dtype=torch.int64, device=x.device
         )
         boundary[:, 2] = y_lens
-        boundary[:, 3] = x_lens
+        boundary[:, 3] = h_lens
 
         '''
         lm = self.simple_lm_proj(decoder_out)
@@ -208,9 +210,9 @@ class Transducer(nn.Module):
             encoder_out,
             decoder_out,
             x,
-            x_lens
+            x_lens,
+            h_lens,
         )
-
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss(
                 logits=logits.float(),

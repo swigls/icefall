@@ -1,6 +1,6 @@
 dir=$( dirname -- "$0"; )
 
-for decoding_method in greedy_search fast_beam_search modified_beam_search; do
+for decoding_method in greedy_search beam_search; do
   ./$dir/decode.py \
     --epoch 2 \
     --avg 1 \
