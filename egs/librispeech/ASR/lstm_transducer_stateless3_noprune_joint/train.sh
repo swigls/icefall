@@ -1,10 +1,10 @@
-export CUDA_VISIBLE_DEVICES="0,1,2,3,4"
+export CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
-  --world-size 5 \
-  --num-epochs 40 \
-  --start-epoch 1 \
+  --world-size 4 \
+  --num-epochs 100 \
+  --start-epoch 31 \
   --exp-dir $dir/exp \
   --full-libri 1 \
   --use-fp16 1 \
@@ -14,4 +14,7 @@ dir=$( dirname -- "$0"; )
   --num-encoder-layers 12 \
   --grad-norm-threshold 25.0 \
   --rnn-hidden-size 1024 \
-  --kmeans-model $dir/exp/kmeans_500.npy
+  --kmeans-model $dir/exp/kmeans_500.npy \
+  --pronouncer-stop-gradient 0 \
+  --pronouncer-lambda 1.0 \
+  --pronouncer-normalize 0

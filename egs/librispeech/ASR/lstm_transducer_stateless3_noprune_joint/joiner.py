@@ -32,6 +32,9 @@ class Joiner(nn.Module):
         joiner_dim: int,
         vocab_size: int,
         kmeans_model: str,
+        pronouncer_stop_gradient: bool,
+        pronouncer_lambda: float,
+        pronouncer_normalize: bool,
     ):
         super().__init__()
 
@@ -39,6 +42,9 @@ class Joiner(nn.Module):
         self.decoder_proj = ScaledLinear(decoder_dim, joiner_dim)
         self.output_linear = ScaledLinear(joiner_dim, vocab_size)
 
+        self.pronouncer_stop_gradient = pronouncer_stop_gradient
+        self.pronouncer_lambda = pronouncer_lambda
+        self.pronouncer_normalize = pronouncer_normalize
         self.pronouncer = Pronouncer(
             joiner_dim,
             kmeans_model=kmeans_model,
@@ -51,9 +57,7 @@ class Joiner(nn.Module):
         self,
         encoder_out: torch.Tensor,
         decoder_out: torch.Tensor,
-        x: torch.Tensor,
-        x_lens: Optional[torch.Tensor] = None,
-        h_lens: Optional[torch.Tensor] = None,
+        x_target: Optional[torch.Tensor] = None,
         project_input: bool = True,
     ) -> torch.Tensor:
         """
@@ -64,11 +68,8 @@ class Joiner(nn.Module):
           decoder_out:
             Output from the decoder. Its shape is (N, U, self.decoder_dim)
             or (N, 1, U, self.joiner_dim).
-          x:
-            A 3-D tensor of shape (N, T, C).
-          x_lens:
-            A 1-D tensor of shape (N,). It contains the number of frames in `x`
-            before padding.
+          x_target:
+            A 3-D tensor of shape (N, T, D').
         Returns:
           Return a tensor of shape (N, T, U, C).
         """
@@ -77,10 +78,6 @@ class Joiner(nn.Module):
         assert decoder_out.size(-1) == self.decoder_dim
         assert encoder_out.ndim in (3, 4)
         assert encoder_out.ndim == decoder_out.ndim
-        # if not is_jit_tracing():
-        #    assert encoder_out.ndim == decoder_out.ndim
-        #    assert encoder_out.ndim in (2, 4)
-        #    assert encoder_out.shape == decoder_out.shape
 
         if encoder_out.ndim == 3:
             encoder_out = encoder_out.unsqueeze(2)  # (N, T, 1, E)
@@ -97,13 +94,32 @@ class Joiner(nn.Module):
         logits = self.output_linear(activations)  # (N, T, U, V)
 
         # calculating log-prob of x
-        # NOTE: encoder out frame h_t corresponsd to x_(4t:4t+8)
-        #       (check the Conv2dSubsampling)
-        #       so, x_(4t+9:4t+12) should be estimated from h_t = Enc(x(1:4t+8))
-        x_logp = self.pronouncer(
-            activations,
-            x,
-            x_lens,
-            h_lens,
-        )
+        if x_target is None:
+            x_logp = None
+        else:
+            if self.pronouncer_stop_gradient:
+                activations = activations.detach()
+            x_logp = self.pronouncer(
+                activations,
+                x_target,
+            )  # [N, T, U]
+            # If pronouncer is to be normalized,
+            # get unconditional probability on x using
+            if self.pronouncer_normalize:
+                norm_activations = torch.tanh(encoder_out)  # [N, T, 1, J]
+                if self.pronouncer_stop_gradient:
+                    norm_activations = norm_activations.detach()
+                x_logp_denom = self.pronouncer(
+                    norm_activations,
+                    x_target,
+                )  # [N, T, 1]
+                # If the gradient of denom is not stopped,
+                # the trained model just minimizes P_theta(x_t+1 | x_t)
+                # which is not an intended behaviour
+                x_logp_denom = x_logp_denom.detach()
+                x_logp = x_logp - x_logp_denom  # [N, T, U]
+
+            x_logp = x_logp * self.pronouncer_lambda
+            if self.training:
+                print('x_logp[0:2]:', x_logp[0:2])
         return logits, x_logp

@@ -21,11 +21,9 @@ import k2
 import torch
 import torch.nn as nn
 from encoder_interface import EncoderInterface
-from scaling import ScaledLinear
 
 from icefall.utils import add_sos
-
-import logging
+from lstm import Conv2dSubsampling
 
 
 class Transducer(nn.Module):
@@ -205,14 +203,30 @@ class Transducer(nn.Module):
             )
         '''
 
+        x_target = Conv2dSubsampling.chunk_next_feature(
+            x=x,
+        )  # [N, T, D']
+
+        # logits: [N, T, S+1, 1]
         # x_logp: [N, T, S+1]
         logits, x_logp = self.joiner(
             encoder_out,
             decoder_out,
-            x,
-            x_lens,
-            h_lens,
+            x_target,
         )
+
+        # Last time index should be ignored, since no valid x_target left.
+        # This is implemented by masking
+        x_target_mask = torch.arange(
+            encoder_out.size(1),
+            device=encoder_out.device,
+            dtype=encoder_out.dtype
+        )[None, :] < (
+            h_lens[:, None] - 1
+        )  # [N, T]
+        x_target_mask = x_target_mask.unsqueeze(2)  # [N, T, 1]
+        x_logp = x_logp * x_target_mask  # [N, T, S+1]
+
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss(
                 logits=logits.float(),

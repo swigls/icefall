@@ -206,6 +206,31 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--pronouncer-stop-gradient",
+        type=str2bool,
+        default=False,
+        help="""To stop gradients from pronouncer to basic joiner.
+        """,
+    )
+
+    parser.add_argument(
+        "--pronouncer-lambda",
+        type=float,
+        default=1.0,
+        help="""Lambda coefficient of pronouncer log probability.
+        """,
+    )
+
+    parser.add_argument(
+        "--pronouncer-normalize",
+        type=str2bool,
+        default=False,
+        help="""Normalize pronouncer conditional probability on x with 
+        unconditional probability on x
+        """,
+    )
+
+    parser.add_argument(
         "--bpe-model",
         type=str,
         default="data/lang_bpe_500/bpe.model",
@@ -440,7 +465,10 @@ def get_joiner_model(params: AttributeDict) -> nn.Module:
         decoder_dim=params.decoder_dim,
         joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
-        kmeans_model=params.kmeans_model, 
+        kmeans_model=params.kmeans_model,
+        pronouncer_stop_gradient=params.pronouncer_stop_gradient,
+        pronouncer_lambda=params.pronouncer_lambda,
+        pronouncer_normalize=params.pronouncer_normalize,
     )
     return joiner
 

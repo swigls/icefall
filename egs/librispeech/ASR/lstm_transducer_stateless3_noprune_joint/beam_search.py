@@ -26,6 +26,8 @@ from model import Transducer
 from icefall.decode import Nbest, one_best_decoding
 from icefall.utils import add_eos, add_sos, get_texts
 
+from lstm import Conv2dSubsampling
+
 
 def fast_beam_search_one_best(
     model: Transducer,
@@ -468,7 +470,11 @@ def fast_beam_search(
 
 
 def greedy_search(
-    model: Transducer, encoder_out: torch.Tensor, max_sym_per_frame: int
+    model: Transducer,
+    encoder_out: torch.Tensor,
+    max_sym_per_frame: int,
+    pronouncer_lambda: float = 0.0,
+    feature: Optional[torch.Tensor] = None,
 ) -> List[int]:
     """Greedy search for a single utterance.
     Args:
@@ -479,6 +485,8 @@ def greedy_search(
       max_sym_per_frame:
         Maximum number of symbols per frame. If it is set to 0, the WER
         would be 100%.
+      pronouncer_lambda:
+        Lambda coefficient for joint streaming search.
     Returns:
       Return the decoded result.
     """
@@ -501,6 +509,10 @@ def greedy_search(
     decoder_out = model.joiner.decoder_proj(decoder_out)
 
     encoder_out = model.joiner.encoder_proj(encoder_out)
+    if pronouncer_lambda != 0.0:
+        next_feature_chunk = Conv2dSubsampling.chunk_next_feature(
+            x=feature,
+        )
 
     T = encoder_out.size(1)
     t = 0
@@ -523,11 +535,29 @@ def greedy_search(
 
         # fmt: off
         current_encoder_out = encoder_out[:, t:t+1, :].unsqueeze(2)
+        if pronouncer_lambda != 0.0:
+            current_next_feature_chunk = \
+                next_feature_chunk[:, t:t+1, :]  # [N, 1, D']
         # fmt: on
-        logits = model.joiner(
-            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
-        )
-        # logits is (1, 1, 1, vocab_size)
+        if pronouncer_lambda == 0.0:
+            logits, _ = model.joiner(
+                current_encoder_out,
+                decoder_out.unsqueeze(1),
+                project_input=False
+            )
+            # logits is (1, 1, 1, vocab_size)
+        else:
+            logits, x_logp = model.joiner(
+                current_encoder_out,
+                decoder_out.unsqueeze(1),
+                project_input=False,
+                x_target=current_next_feature_chunk,
+            )
+            # x_logp is (1, 1, 1)
+            # TODO(hslee): is this logic right?
+            if pronouncer_lambda != 0.0:
+                logits = logits.log_softmax(dim=-1)
+                logits[:, :, :, blank_id] += x_logp
 
         y = logits.argmax().item()
         if y not in (blank_id, unk_id):
@@ -553,6 +583,8 @@ def greedy_search_batch(
     model: Transducer,
     encoder_out: torch.Tensor,
     encoder_out_lens: torch.Tensor,
+    pronouncer_lambda: float = 0.0,
+    feature: Optional[torch.Tensor] = None,
 ) -> List[List[int]]:
     """Greedy search in batch mode. It hardcodes --max-sym-per-frame=1.
     Args:
@@ -563,6 +595,8 @@ def greedy_search_batch(
       encoder_out_lens:
         A 1-D tensor of shape (N,), containing number of valid frames in
         encoder_out before padding.
+      pronouncer_lambda:
+        Lambda coefficient for joint streaming search.
     Returns:
       Return a list-of-list of token IDs containing the decoded results.
       len(ans) equals to encoder_out.size(0).
@@ -576,6 +610,16 @@ def greedy_search_batch(
         batch_first=True,
         enforce_sorted=False,
     )
+    if pronouncer_lambda != 0.0:
+        next_feature_chunk = Conv2dSubsampling.chunk_next_feature(
+            x=feature,
+        )
+        packed_next_feature_chunk = torch.nn.utils.rnn.pack_padded_sequence(
+            input=next_feature_chunk,
+            lengths=encoder_out_lens.cpu(),
+            batch_first=True,
+            enforce_sorted=False,
+        )  # [P, D]
 
     device = next(model.parameters()).device
 
@@ -609,17 +653,36 @@ def greedy_search_batch(
         current_encoder_out = encoder_out.data[start:end]
         current_encoder_out = current_encoder_out.unsqueeze(1).unsqueeze(1)
         # current_encoder_out's shape: (batch_size, 1, 1, encoder_out_dim)
+        if pronouncer_lambda != 0.0:
+            current_next_feature_chunk = \
+                packed_next_feature_chunk.data[start:end]
+            current_next_feature_chunk = current_next_feature_chunk.unsqueeze(1)
+            # current_next_feature_chunk's shape is (bs, 1, chunk_feat_dim)
         offset = end
 
         decoder_out = decoder_out[:batch_size]
 
-        logits = model.joiner(
-            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
-        )
-        # logits'shape (batch_size, 1, 1, vocab_size)
+        if pronouncer_lambda != 0.0:
+            logits, _ = model.joiner(
+                current_encoder_out,
+                decoder_out.unsqueeze(1),
+                project_input=False
+            )
+            # logits'shape (batch_size, 1, 1, vocab_size)
+        else:
+            logits, x_logp = model.joiner(
+                current_encoder_out,
+                decoder_out.unsqueeze(1),
+                project_input=False,
+                x_target=current_next_feature_chunk,
+            )
+            # x_logp shape (batch_size, 1, 1)
 
         logits = logits.squeeze(1).squeeze(1)  # (batch_size, vocab_size)
         assert logits.ndim == 2, logits.shape
+        # TODO(hslee): is this logit right?
+        if pronouncer_lambda != 0.0:
+            logits[:, blank_id] += x_logp.squeeze()
         y = logits.argmax(dim=1).tolist()
         emitted = False
         for i, v in enumerate(y):
@@ -803,6 +866,8 @@ def modified_beam_search(
     encoder_out_lens: torch.Tensor,
     beam: int = 4,
     temperature: float = 1.0,
+    pronouncer_lambda: float = 0.0,
+    feature: Optional[torch.Tensor] = None,
 ) -> List[List[int]]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
 
@@ -810,7 +875,7 @@ def modified_beam_search(
       model:
         The transducer model.
       encoder_out:
-        Output from the encoder. Its shape is (N, T, C).
+        Output from the encoder. Its shape is (N, T_h, C).
       encoder_out_lens:
         A 1-D tensor of shape (N,), containing number of valid frames in
         encoder_out before padding.
@@ -818,6 +883,8 @@ def modified_beam_search(
         Number of active paths during the beam search.
       temperature:
         Softmax temperature.
+      pronouncer_lambda:
+        Lambda coefficient for joint streaming search.
     Returns:
       Return a list-of-list of token IDs. ans[i] is the decoding results
       for the i-th utterance.
@@ -830,7 +897,17 @@ def modified_beam_search(
         lengths=encoder_out_lens.cpu(),
         batch_first=True,
         enforce_sorted=False,
-    )
+    )  # [P, D]
+    if pronouncer_lambda != 0.0:
+        next_feature_chunk = Conv2dSubsampling.chunk_next_feature(
+            x=feature,  # [N, T, D]
+        )  # [N, T_h, 4D]
+        packed_next_feature_chunk = torch.nn.utils.rnn.pack_padded_sequence(
+            input=next_feature_chunk,
+            lengths=encoder_out_lens.cpu(),
+            batch_first=True,
+            enforce_sorted=False,
+        )  # [P, D]
 
     blank_id = model.decoder.blank_id
     unk_id = getattr(model, "unk_id", blank_id)
@@ -861,6 +938,11 @@ def modified_beam_search(
         current_encoder_out = encoder_out.data[start:end]
         current_encoder_out = current_encoder_out.unsqueeze(1).unsqueeze(1)
         # current_encoder_out's shape is (batch_size, 1, 1, encoder_out_dim)
+        if pronouncer_lambda != 0.0:
+            current_next_feature_chunk = \
+                packed_next_feature_chunk.data[start:end]
+            current_next_feature_chunk = current_next_feature_chunk.unsqueeze(1)
+            # current_next_feature_chunk's shape is (bs, 1, chunk_feat_dim)
         offset = end
 
         finalized_B = B[batch_size:] + finalized_B
@@ -892,12 +974,27 @@ def modified_beam_search(
             dim=0,
             index=hyps_shape.row_ids(1).to(torch.int64),
         )  # (num_hyps, 1, 1, encoder_out_dim)
+        if pronouncer_lambda != 0.0:
+            current_next_feature_chunk = torch.index_select(
+                current_next_feature_chunk,
+                dim=0,
+                index=hyps_shape.row_ids(1).to(torch.int64),
+            )  # (num_hyps, 1, 1, encoder_out_dim)
 
-        logits = model.joiner(
-            current_encoder_out,
-            decoder_out,
-            project_input=False,
-        )  # (num_hyps, 1, 1, vocab_size)
+        if pronouncer_lambda == 0.0:
+            logits, _ = model.joiner(
+                current_encoder_out,
+                decoder_out,
+                project_input=False,
+            )  # (num_hyps, 1, 1, vocab_size)
+        else:
+            # x_logp: (num_hyps, 1, 1)
+            logits, x_logp = model.joiner(
+                current_encoder_out,
+                decoder_out,
+                x_target=current_next_feature_chunk,
+                project_input=False,
+            )  # (num_hyps, 1, 1, vocab_size)
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
@@ -905,11 +1002,16 @@ def modified_beam_search(
             dim=-1
         )  # (num_hyps, vocab_size)
 
-        log_probs.add_(ys_log_probs)
+        # TODO(hslee): is this logic right?
+        # Assumption: every frame just contain 1 symbol, thus
+        #             always entail blank
+        if pronouncer_lambda != 0.0:
+            log_probs.add_(x_logp.squeeze(1))  # (num_hyps, vocab_size)
+        log_probs.add_(ys_log_probs)  # (num_hyps, vocab_size)
 
         vocab_size = log_probs.size(-1)
 
-        log_probs = log_probs.reshape(-1)
+        log_probs = log_probs.reshape(-1)  # (num_hyps * vocab_size)
 
         row_splits = hyps_shape.row_splits(1) * vocab_size
         log_probs_shape = k2.ragged.create_ragged_shape2(
@@ -1068,6 +1170,8 @@ def beam_search(
     encoder_out: torch.Tensor,
     beam: int = 4,
     temperature: float = 1.0,
+    pronouncer_lambda: float = 0.0,
+    feature: Optional[torch.Tensor] = None,
 ) -> List[int]:
     """
     It implements Algorithm 1 in https://arxiv.org/pdf/1211.3711.pdf
@@ -1083,6 +1187,8 @@ def beam_search(
         Beam size.
       temperature:
         Softmax temperature.
+      pronouncer_lambda:
+        Lambda coefficient for joint streaming search.
     Returns:
       Return the decoded result.
     """
@@ -1106,6 +1212,10 @@ def beam_search(
     decoder_out = model.joiner.decoder_proj(decoder_out)
 
     encoder_out = model.joiner.encoder_proj(encoder_out)
+    if pronouncer_lambda != 0.0:
+        next_feature_chunk = Conv2dSubsampling.chunk_next_feature(
+            x=feature,
+        )
 
     T = encoder_out.size(1)
     t = 0
@@ -1122,6 +1232,9 @@ def beam_search(
     while t < T and sym_per_utt < max_sym_per_utt:
         # fmt: off
         current_encoder_out = encoder_out[:, t:t+1, :].unsqueeze(2)
+        if pronouncer_lambda != 0.0:
+            current_next_feature_chunk = \
+                next_feature_chunk[:, t:t+1, :]  # [N, 1, D']
         # fmt: on
         A = B
         B = HypothesisList()
@@ -1152,16 +1265,28 @@ def beam_search(
 
             cached_key += f"-t-{t}"
             if cached_key not in joint_cache:
-                logits = model.joiner(
-                    current_encoder_out,
-                    decoder_out.unsqueeze(1),
-                    project_input=False,
-                )
+                if pronouncer_lambda == 0.0:
+                    logits, _ = model.joiner(
+                        current_encoder_out,
+                        decoder_out.unsqueeze(1),
+                        project_input=False,
+                    )
+                else:
+                    logits, x_logp = model.joiner(
+                        current_encoder_out,
+                        decoder_out.unsqueeze(1),
+                        project_input=False,
+                        x_target=current_next_feature_chunk,
+                    )  # x_logp: [1, 1, 1]
 
                 # TODO(fangjun): Scale the blank posterior
                 log_prob = (logits / temperature).log_softmax(dim=-1)
                 # log_prob is (1, 1, 1, vocab_size)
                 log_prob = log_prob.squeeze()
+                # TODO(hslee): is this logit right?
+                if pronouncer_lambda != 0.0:
+                    log_prob[blank_id] += x_logp.squeeze()
+
                 # Now log_prob is (vocab_size,)
                 joint_cache[cached_key] = log_prob
             else:
