@@ -13,3 +13,4 @@ log
 *bak.py
 *.param
 *.bin
+**.swp
