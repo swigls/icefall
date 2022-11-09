@@ -21,6 +21,7 @@ from scaling import ScaledLinear
 # from icefall.utils import is_jit_tracing
 
 import faiss
+from faiss.contrib.torch_utils import swig_ptr_from_FloatTensor
 import numpy as np
 
 

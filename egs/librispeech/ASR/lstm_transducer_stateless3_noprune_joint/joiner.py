@@ -117,9 +117,10 @@ class Joiner(nn.Module):
                 # the trained model just minimizes P_theta(x_t+1 | x_t)
                 # which is not an intended behaviour
                 x_logp_denom = x_logp_denom.detach()
+                if self.training:
+                    print('x_logp[0:1]:', x_logp[0:1])
+                    print('x_logp_denom[0:1]:', x_logp_denom[0:1])
                 x_logp = x_logp - x_logp_denom  # [N, T, U]
 
             x_logp = x_logp * self.pronouncer_lambda
-            if self.training:
-                print('x_logp[0:2]:', x_logp[0:2])
         return logits, x_logp
