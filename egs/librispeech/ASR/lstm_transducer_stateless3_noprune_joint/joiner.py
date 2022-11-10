@@ -119,8 +119,9 @@ class Joiner(nn.Module):
                 x_logp_denom = x_logp_denom.detach()
                 if self.training:
                     print('x_logp[0:1]:', x_logp[0:1])
-                    print('x_logp_denom[0:1]:', x_logp_denom[0:1])
                 x_logp = x_logp - x_logp_denom  # [N, T, U]
+                if self.training:
+                    print('x_logp_normed[0:1]:', x_logp[0:1])
 
             x_logp = x_logp * self.pronouncer_lambda
         return logits, x_logp

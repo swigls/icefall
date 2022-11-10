@@ -5,7 +5,7 @@ dir=$( dirname -- "$0"; )
   --world-size 4 \
   --num-epochs 40 \
   --start-epoch 1 \
-  --exp-dir $dir/exp-normsg \
+  --exp-dir $dir/exp-sg-norm \
   --full-libri 1 \
   --use-fp16 1 \
   --enable-musan 0 \
@@ -15,6 +15,6 @@ dir=$( dirname -- "$0"; )
   --grad-norm-threshold 25.0 \
   --rnn-hidden-size 1024 \
   --kmeans-model $dir/exp/kmeans_500.npy \
-  --pronouncer-stop-gradient 0 \
+  --pronouncer-stop-gradient 1 \
   --pronouncer-lambda 1.0 \
   --pronouncer-normalize 1
