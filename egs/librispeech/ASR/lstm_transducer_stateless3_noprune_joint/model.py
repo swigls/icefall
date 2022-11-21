@@ -227,6 +227,7 @@ class Transducer(nn.Module):
         x_target_mask = x_target_mask.unsqueeze(2)  # [N, T, 1]
         x_logp = x_logp * x_target_mask  # [N, T, S+1]
 
+        print(x_target_mask)
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss(
                 logits=logits.float(),

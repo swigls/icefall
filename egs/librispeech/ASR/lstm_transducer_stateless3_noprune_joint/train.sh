@@ -1,20 +1,20 @@
-export CUDA_VISIBLE_DEVICES="0,1,2,3"
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
-  --world-size 4 \
+  --world-size 7 \
   --num-epochs 40 \
   --start-epoch 1 \
-  --exp-dir $dir/exp-sg-norm \
+  --exp-dir $dir/exp-normsg-lam0.3 \
   --full-libri 1 \
   --use-fp16 1 \
   --enable-musan 0 \
-  --max-duration 150 \
+  --max-duration 80 \
   --master-port 12325 \
   --num-encoder-layers 12 \
   --grad-norm-threshold 25.0 \
   --rnn-hidden-size 1024 \
   --kmeans-model $dir/exp/kmeans_500.npy \
-  --pronouncer-stop-gradient 1 \
-  --pronouncer-lambda 1.0 \
+  --pronouncer-stop-gradient 0 \
+  --pronouncer-lambda 0.3 \
   --pronouncer-normalize 1
