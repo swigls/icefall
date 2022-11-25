@@ -106,6 +106,7 @@ class Joiner(nn.Module):
             # If pronouncer is to be normalized,
             # get unconditional probability on x using
             if self.pronouncer_normalize:
+                '''
                 norm_activations = torch.tanh(encoder_out)  # [N, T, 1, J]
                 if self.pronouncer_stop_gradient:
                     norm_activations = norm_activations.detach()
@@ -113,6 +114,8 @@ class Joiner(nn.Module):
                     norm_activations,
                     x_target,
                 )  # [N, T, 1]
+                '''
+                x_logp_denom = x_logp[:, :, 0:1]  # [N, T, 1]
                 # If the gradient of denom is not stopped,
                 # the trained model just minimizes P_theta(x_t+1 | x_t)
                 # which is not an intended behaviour

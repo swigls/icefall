@@ -5,17 +5,17 @@ for decoding_method in greedy_search modified_beam_search modified_beam_search_j
 #for decoding_method in greedy_search_joint; do
 #for decoding_method in beam_search beam_search_joint; do
   ./$dir/decode.py \
-    --epoch 21 \
-    --avg 7 \
-    --use-averaged-model True \
-    --exp-dir $dir/exp-normsg-lam0.3 \
+    --epoch 1 \
+    --avg 1 \
+    --use-averaged-model False \
+    --exp-dir $dir/exp-normsgt0 \
     --max-duration 300 \
     --num-encoder-layers 12 \
     --rnn-hidden-size 1024 \
     --decoding-method $decoding_method \
     --kmeans-model $dir/exp/kmeans_500.npy \
     --pronouncer-stop-gradient 0 \
-    --pronouncer-lambda 0.3 \
+    --pronouncer-lambda 1.0 \
     --pronouncer-normalize 1 \
     --max-sym-per-frame 4 \
     --beam 8 \
