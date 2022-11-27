@@ -1,9 +1,9 @@
-export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6"
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
-  --master-port 12344 \
-  --world-size 7 \
+  --master-port 12345 \
+  --world-size 5 \
   --num-epochs 30 \
   --start-epoch 1 \
   --full-libri 1 \

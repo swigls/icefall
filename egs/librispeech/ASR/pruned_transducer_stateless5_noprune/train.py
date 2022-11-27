@@ -698,10 +698,13 @@ def compute_loss(
             if warmup < 1.0
             else (0.1 if warmup > 1.0 and warmup < 2.0 else 1.0)
         )
+        '''
         loss = (
             params.simple_loss_scale * simple_loss
             + pruned_loss_scale * pruned_loss
         )
+        '''
+        loss = pruned_loss
 
     assert loss.requires_grad == is_training
 

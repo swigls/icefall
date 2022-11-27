@@ -66,11 +66,6 @@ class Transducer(nn.Module):
         self.decoder = decoder
         self.joiner = joiner
 
-        self.simple_am_proj = ScaledLinear(
-            encoder_dim, vocab_size, initial_speed=0.5
-        )
-        self.simple_lm_proj = ScaledLinear(decoder_dim, vocab_size)
-
     def forward(
         self,
         x: torch.Tensor,
@@ -206,7 +201,6 @@ class Transducer(nn.Module):
         logits = self.joiner(
             encoder_out, 
             decoder_out, 
-            project_input=False
         )
 
         with torch.cuda.amp.autocast(enabled=False):
