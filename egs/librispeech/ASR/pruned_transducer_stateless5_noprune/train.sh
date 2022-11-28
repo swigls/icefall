@@ -20,4 +20,4 @@ dir=$( dirname -- "$0"; )
   --dynamic-chunk-training 1 \
   --causal-convolution 1 \
   --short-chunk-size 1 \
-  --num-left-chunks 64
+  --num-left-chunks 128
