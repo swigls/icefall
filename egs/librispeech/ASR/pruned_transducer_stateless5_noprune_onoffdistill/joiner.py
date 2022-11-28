@@ -20,7 +20,7 @@ from scaling import ScaledLinear
 
 from icefall.utils import is_jit_tracing
 from typing import Optional
-
+from pronouncer import Pronouncer
 
 class Joiner(nn.Module):
     def __init__(
@@ -29,6 +29,7 @@ class Joiner(nn.Module):
         decoder_dim: int,
         joiner_dim: int,
         vocab_size: int,
+        pronouncer_stop_gradient: bool = False,
     ):
         super().__init__()
 
@@ -36,12 +37,16 @@ class Joiner(nn.Module):
         self.decoder_proj = ScaledLinear(decoder_dim, joiner_dim)
         self.output_linear = ScaledLinear(joiner_dim, vocab_size)
 
+        self.pronouncer = Pronouncer(joiner_dim)
+        self.pronouncer_stop_gradient = pronouncer_stop_gradient
+
     def forward(
         self,
         encoder_out: torch.Tensor,
         decoder_out: torch.Tensor,
         x_target: Optional[torch.Tensor] = None,
-        project_input: bool = True,        
+        project_input: bool = True,
+        offline: bool = False, 
     ) -> torch.Tensor:
         """
         Args:
@@ -54,7 +59,7 @@ class Joiner(nn.Module):
           x_target:
             A 3-D tensor of shape (N, T, D').
         Returns:
-          Return a tensor of shape (N, T, U, C).
+          Return a tensor of shape (N, T, U, V).
         """
         assert encoder_out.size(0) == decoder_out.size(0)
         assert encoder_out.ndim in (3, 4)
@@ -74,4 +79,10 @@ class Joiner(nn.Module):
 
         logits = self.output_linear(activations)  # (N, T, U, V)
 
-        return logits
+        if offline:
+            return logits
+
+        if self.pronouncer_stop_gradient:
+            activations = activations.detach()
+        r = self.pronouncer(activations)  # (N, T, U)
+        return logits, r

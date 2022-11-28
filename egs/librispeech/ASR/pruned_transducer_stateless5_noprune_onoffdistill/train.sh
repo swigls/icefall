@@ -8,8 +8,8 @@ dir=$( dirname -- "$0"; )
   --start-epoch 1 \
   --full-libri 1 \
   --enable-musan 0 \
-  --exp-dir $dir/exp-B-uni \
-  --max-duration 160 \
+  --exp-dir $dir/exp \
+  --max-duration 100 \
   --use-fp16 1 \
   --num-encoder-layers 24 \
   --dim-feedforward 1536 \
@@ -20,4 +20,8 @@ dir=$( dirname -- "$0"; )
   --dynamic-chunk-training 1 \
   --causal-convolution 1 \
   --short-chunk-size 1 \
-  --num-left-chunks 64
+  --num-left-chunks 64 \
+  --pronouncer-stop-gradient 0 \
+  --loss-off-scale 1.0 \
+  --loss-on-scale 1.0 \
+  --loss-r-scale 1.0
