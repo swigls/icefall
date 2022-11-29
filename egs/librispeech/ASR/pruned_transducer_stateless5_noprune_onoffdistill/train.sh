@@ -8,7 +8,7 @@ dir=$( dirname -- "$0"; )
   --start-epoch 1 \
   --full-libri 1 \
   --enable-musan 0 \
-  --exp-dir $dir/exp \
+  --exp-dir $dir/exp-scaled \
   --max-duration 100 \
   --use-fp16 1 \
   --num-encoder-layers 24 \
@@ -22,6 +22,6 @@ dir=$( dirname -- "$0"; )
   --short-chunk-size 1 \
   --num-left-chunks 128 \
   --pronouncer-stop-gradient 0 \
-  --loss-off-scale 1.0 \
-  --loss-on-scale 1.0 \
+  --loss-off-scale 0.25 \
+  --loss-on-scale 0.75 \
   --loss-r-scale 1.0

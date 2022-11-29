@@ -18,7 +18,7 @@ for chunk in 1; do
             --epoch 2 \
             --use-averaged-model True \
             --avg 1 \
-            --exp-dir ./$dir/exp \
+            --exp-dir ./$dir/exp-scaled \
             --max-sym-per-frame 1 \
             --max-duration 600 \
             --decoding-method ${decoding_method}

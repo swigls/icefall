@@ -524,7 +524,7 @@ def greedy_search(
         # fmt: off
         current_encoder_out = encoder_out[:, t:t+1, :].unsqueeze(2)
         # fmt: on
-        logits = model.joiner(
+        logits, _ = model.joiner(
             current_encoder_out, decoder_out.unsqueeze(1), project_input=False
         )
         # logits is (1, 1, 1, vocab_size)
