@@ -188,6 +188,14 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--pronouncer-stop-gradient",
+        type=str2bool,
+        default=False,
+        help="""To stop gradients from pronouncer to basic joiner.
+        """,
+    )
+
+    parser.add_argument(
         "--bpe-model",
         type=str,
         default="data/lang_bpe_500/bpe.model",
