@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES="0,1,2,3,4"
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
@@ -9,7 +9,7 @@ dir=$( dirname -- "$0"; )
   --full-libri 1 \
   --enable-musan 0 \
   --exp-dir $dir/exp-B-uni \
-  --max-duration 160 \
+  --max-duration 90 \
   --use-fp16 1 \
   --num-encoder-layers 24 \
   --dim-feedforward 1536 \

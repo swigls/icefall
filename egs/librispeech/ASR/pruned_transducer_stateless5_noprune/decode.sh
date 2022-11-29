@@ -3,7 +3,7 @@ dir=$( dirname -- "$0"; )
 decoding_method="greedy_search"  # "fast_beam_search", "modified_beam_search"
 #decoding_method="modified_search"  
 for chunk in 1; do
-  for left in 64; do
+  for left in 128; do
     ./$dir/decode.py \
             --num-encoder-layers 24 \
             --dim-feedforward 1536 \
@@ -15,9 +15,9 @@ for chunk in 1; do
             --decode-chunk-size ${chunk} \
             --left-context ${left} \
             --causal-convolution 1 \
-            --epoch 5 \
+            --epoch 2 \
             --use-averaged-model True \
-            --avg 2 \
+            --avg 1 \
             --exp-dir ./$dir/exp-B-uni \
             --max-sym-per-frame 1 \
             --max-duration 600 \
