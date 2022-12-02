@@ -22,6 +22,7 @@ from icefall.utils import is_jit_tracing
 from typing import Optional
 from pronouncer import Pronouncer
 
+
 class Joiner(nn.Module):
     def __init__(
         self,
@@ -46,7 +47,8 @@ class Joiner(nn.Module):
         decoder_out: torch.Tensor,
         x_target: Optional[torch.Tensor] = None,
         project_input: bool = True,
-        offline: bool = False, 
+        compute_r: bool = True,
+        encoder_out_next: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -64,6 +66,10 @@ class Joiner(nn.Module):
         assert encoder_out.size(0) == decoder_out.size(0)
         assert encoder_out.ndim in (3, 4)
         assert encoder_out.ndim == decoder_out.ndim
+        assert (
+            encoder_out_next is None
+            or encoder_out_next.shape == encoder_out.shape
+        )
 
         if encoder_out.ndim == 3:
             encoder_out = encoder_out.unsqueeze(2)  # (N, T, 1, E)
@@ -74,15 +80,30 @@ class Joiner(nn.Module):
             decoder_out = self.decoder_proj(decoder_out)  # (N, 1, U, J)
 
         joint_emb = encoder_out + decoder_out  # (N, T, U, J)
-
         activations = torch.tanh(joint_emb)
-
         logits = self.output_linear(activations)  # (N, T, U, V)
-
-        if offline:
+        if not compute_r:
             return logits
+
+        N, T, U, J = joint_emb.shape
+        if encoder_out_next is None:
+            activations_next = torch.cat(
+                [
+                    activations[:, 1:, :, :],
+                    torch.zeros([N, 1, U, J], device=activations.device),
+                ],
+                dim=1,
+            )  # [N, T, U, J]
+        else:
+            joint_emb_next = encoder_out_next + decoder_out
+            activations_next = torch.tanh(joint_emb_next)  # [N, T, U, J]
 
         if self.pronouncer_stop_gradient:
             activations = activations.detach()
-        r = self.pronouncer(activations)  # (N, T, U)
+            activations_next = activations_next.detach()
+
+        r = self.pronouncer(activations, activations_next)  # (N, T, U)
+
+        # if self.training:
+        #    print("r[0]", r[0])
         return logits, r

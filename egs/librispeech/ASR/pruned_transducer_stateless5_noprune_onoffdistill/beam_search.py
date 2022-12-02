@@ -524,8 +524,9 @@ def greedy_search(
         # fmt: off
         current_encoder_out = encoder_out[:, t:t+1, :].unsqueeze(2)
         # fmt: on
-        logits, _ = model.joiner(
-            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
+        logits = model.joiner(
+            current_encoder_out, decoder_out.unsqueeze(1), project_input=False,
+            compute_r=False,
         )
         # logits is (1, 1, 1, vocab_size)
 
@@ -613,8 +614,9 @@ def greedy_search_batch(
 
         decoder_out = decoder_out[:batch_size]
 
-        logits, _ = model.joiner(
-            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
+        logits = model.joiner(
+            current_encoder_out, decoder_out.unsqueeze(1), project_input=False,
+            compute_r=False,
         )
         # logits'shape (batch_size, 1, 1, vocab_size)
 
@@ -803,6 +805,7 @@ def modified_beam_search(
     encoder_out_lens: torch.Tensor,
     beam: int = 4,
     temperature: float = 1.0,
+    pronouncer_lambda: float = 1.0,
 ) -> List[List[int]]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
 
@@ -824,13 +827,27 @@ def modified_beam_search(
     """
     assert encoder_out.ndim == 3, encoder_out.shape
     assert encoder_out.size(0) >= 1, encoder_out.size(0)
+    assert pronouncer_lambda >= 0.
 
     packed_encoder_out = torch.nn.utils.rnn.pack_padded_sequence(
         input=encoder_out,
         lengths=encoder_out_lens.cpu(),
         batch_first=True,
         enforce_sorted=False,
-    )
+    )  # [P, C]
+    N, T, C = encoder_out.shape
+    if pronouncer_lambda > 0.:
+        encoder_out_next = torch.cat(
+            [encoder_out[:, 1:, :],  # [N, T-1, C]
+            torch.zeros([N, 1, C], device=encoder_out.device)],
+            dim=1
+        )
+        packed_encoder_out = torch.nn.utils.rnn.pack_padded_sequence(
+            input=encoder_out_next,
+            lengths=encoder_out_lens.cpu(),
+            batch_first=True,
+            enforce_sorted=False,
+        )  # [P, C]
 
     blank_id = model.decoder.blank_id
     unk_id = getattr(model, "unk_id", blank_id)
@@ -861,6 +878,10 @@ def modified_beam_search(
         current_encoder_out = encoder_out.data[start:end]
         current_encoder_out = current_encoder_out.unsqueeze(1).unsqueeze(1)
         # current_encoder_out's shape is (batch_size, 1, 1, encoder_out_dim)
+        if pronouncer_lambda > 0.:
+            current_encoder_out_next = encoder_out_next.data[start:end]
+            current_encoder_out_next = \
+                current_encoder_out_next.unsqueeze(1).unsqueeze(1)
         offset = end
 
         finalized_B = B[batch_size:] + finalized_B
@@ -892,12 +913,29 @@ def modified_beam_search(
             dim=0,
             index=hyps_shape.row_ids(1).to(torch.int64),
         )  # (num_hyps, 1, 1, encoder_out_dim)
-
-        logits = model.joiner(
-            current_encoder_out,
-            decoder_out,
-            project_input=False,
-        )  # (num_hyps, 1, 1, vocab_size)
+        if pronouncer_lambda > 0.:
+            current_encoder_out_next = torch.index_select(
+                current_encoder_out_next,
+                dim=0,
+                index=hyps_shape.row_ids(1).to(torch.int64),
+            )  # (num_hyps, 1, 1, encoder_out_dim)
+            
+        if pronouncer_lambda > 0.:
+            # r: (num_hyp, 1, 1)
+            logits, r = model.joiner(
+                current_encoder_out,
+                decoder_out,
+                project_input=False,
+                compute_r=True,
+            )  # (num_hyps, 1, 1, vocab_size)
+            r = r * pronouncer_lambda
+        else:
+            logits = model.joiner(
+                current_encoder_out,
+                decoder_out,
+                project_input=False,
+                compute_r=False,
+            )  # (num_hyps, 1, 1, vocab_size)
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
@@ -905,7 +943,14 @@ def modified_beam_search(
             dim=-1
         )  # (num_hyps, vocab_size)
 
-        log_probs.add_(ys_log_probs)
+        # TODO: check whether this logic is right or not
+        # Assumption: every frame contain only 1 symbol,
+        #             thus always entail blank after that.
+        #             This means r should be added to
+        #             all the symbols in vocab.
+        if pronouncer_lambda > 0.:
+            log_probs.add_(r.squeeze(1))  # (num_hyps, vocab_size)
+        log_probs.add_(ys_log_probs)  # (num_hyps, vocab_size)
 
         vocab_size = log_probs.size(-1)
 

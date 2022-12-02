@@ -196,6 +196,15 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--pronouncer-lambda",
+        type=float,
+        default=1.0,
+        help=""" Coefficient for pronouncer log-probability.
+        (only used for modified_beam_search) 
+        """,
+    )
+
+    parser.add_argument(
         "--bpe-model",
         type=str,
         default="data/lang_bpe_500/bpe.model",
@@ -480,6 +489,7 @@ def decode_one_batch(
             encoder_out=encoder_out,
             encoder_out_lens=encoder_out_lens,
             beam=params.beam_size,
+            pronouncer_lambda=params.pronouncer_lambda,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
@@ -697,6 +707,10 @@ def main():
 
     if params.use_averaged_model:
         params.suffix += "-use-averaged-model"
+
+    if params.pronouncer_lambda > 0.:
+        params.suffix += f"-plambda-{params.pronouncer_lambda}"
+        
 
     setup_logger(f"{params.res_dir}/log-decode-{params.suffix}")
     logging.info("Decoding started")

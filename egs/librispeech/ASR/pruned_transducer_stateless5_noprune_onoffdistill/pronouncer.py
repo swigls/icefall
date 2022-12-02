@@ -35,6 +35,7 @@ class Pronouncer(nn.Module):
     def forward(
         self,
         joint_input: torch.Tensor,
+        joint_input_next: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
@@ -44,16 +45,12 @@ class Pronouncer(nn.Module):
           Return a tensor of shape (N, T, U).
         """
         assert joint_input.ndim in (4,)
+        assert joint_input.shape == joint_input_next.shape
         device = joint_input.device
-        N, T, U, J = joint_input.shape
 
         # shift inputs by chunk-size(=1)
-        x = joint_input  # [N, T, U, J]
-        x_next = torch.cat(
-            [joint_input[:, 1:, :, :],  # [N, T-1, U, J]
-            torch.zeros([N, 1, U, J], device=x.device)],
-            dim=1
-        )  # [N, T, U, J]
-        x_input = torch.cat([x, x_next], dim=-1)  # [N, T, U, 2J] 
+        x_input = torch.cat(
+            [joint_input, joint_input_next], dim=-1
+        )  # [N, T, U, 2J]
         r_logp = self.output_linear(x_input)[:, :, :, 0]  # [N, T, U]
         return r_logp

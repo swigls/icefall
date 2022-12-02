@@ -159,11 +159,12 @@ class Transducer(nn.Module):
         logits_off = self.joiner(
             encoder_out_off, 
             decoder_out, 
-            offline=True,
+            compute_r=False,
         )  # [N, T, U, V]
         logits_on, r = self.joiner(
             encoder_out_on, 
-            decoder_out, 
+            decoder_out,
+            compute_r=True 
         )  # [N, T, U, V]
 
         with torch.cuda.amp.autocast(enabled=False):

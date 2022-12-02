@@ -5,7 +5,7 @@ dir=$( dirname -- "$0"; )
   --master-port 12345 \
   --world-size 5 \
   --num-epochs 30 \
-  --start-epoch 1 \
+  --start-epoch 13 \
   --full-libri 1 \
   --enable-musan 0 \
   --exp-dir $dir/exp-scaled \
