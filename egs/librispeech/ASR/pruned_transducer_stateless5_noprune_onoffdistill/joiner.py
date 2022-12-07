@@ -31,6 +31,7 @@ class Joiner(nn.Module):
         joiner_dim: int,
         vocab_size: int,
         pronouncer_stop_gradient: bool = False,
+        pronouncer_lambda: float = 1.0,
     ):
         super().__init__()
 
@@ -40,6 +41,7 @@ class Joiner(nn.Module):
 
         self.pronouncer = Pronouncer(joiner_dim)
         self.pronouncer_stop_gradient = pronouncer_stop_gradient
+        self.pronouncer_lambda = pronouncer_lambda
 
     def forward(
         self,
@@ -103,7 +105,7 @@ class Joiner(nn.Module):
             activations_next = activations_next.detach()
 
         r = self.pronouncer(activations, activations_next)  # (N, T, U)
-
+        r = r * self.pronouncer_lambda
         # if self.training:
         #    print("r[0]", r[0])
         return logits, r

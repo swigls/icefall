@@ -246,6 +246,15 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--pronouncer-lambda",
+        type=float,
+        default=1.0,
+        help="""Coefficient for applying pronouncer r-value to streaming loss.
+        If equal to 0, it means no r-value is applied to the loss. (not even calculated)
+        """,
+    )
+
+    parser.add_argument(
         "--loss-off-scale",
         type=float,
         default=1.0,
@@ -513,6 +522,7 @@ def get_joiner_model(params: AttributeDict) -> nn.Module:
         joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
         pronouncer_stop_gradient=params.pronouncer_stop_gradient,
+        pronouncer_lambda=params.pronouncer_lambda,
     )
     return joiner
 
