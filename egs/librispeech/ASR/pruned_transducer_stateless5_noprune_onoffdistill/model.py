@@ -40,6 +40,7 @@ class Transducer(nn.Module):
         decoder_dim: int,
         joiner_dim: int,
         vocab_size: int,
+        loss_r_norm: bool = False,
     ):
         """
         Args:
@@ -65,6 +66,7 @@ class Transducer(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
         self.joiner = joiner
+        self.loss_r_norm = loss_r_norm
 
     def forward(
         self,
@@ -175,7 +177,7 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction=reduction,
                 py_add=None,
-            )
+            )  # [N,]
 
             loss_on = k2.rnnt_loss(
                 logits=logits_on.float(),
@@ -184,7 +186,7 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction=reduction,
                 py_add=r.detach(),
-            )
+            )  # [N,]
 
             loss_on_r = k2.rnnt_loss(
                 logits=logits_on.detach().float(),
@@ -193,11 +195,13 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction=reduction,
                 py_add=r,
-            )
-            loss_r = torch.norm(
+            )  # [N,]
+            loss_r = torch.abs(
                 loss_on_r - loss_off.detach(),
-                p=1,
-            )
+            )  # [N,]
+            print(loss_off)
+            if self.loss_r_norm:
+                loss_r = loss_r / loss_off.detach()
 
             loss_out = torch.zeros_like(loss_r)  # TODO
 

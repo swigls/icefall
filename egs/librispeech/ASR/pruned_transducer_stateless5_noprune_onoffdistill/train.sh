@@ -1,14 +1,14 @@
-export CUDA_VISIBLE_DEVICES="0,1,2,3"
+export CUDA_VISIBLE_DEVICES="0,1,2,3,4"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
   --master-port 12345 \
-  --world-size 4 \
+  --world-size 5 \
   --num-epochs 30 \
-  --start-epoch 11 \
+  --start-epoch 1 \
   --full-libri 1 \
   --enable-musan 0 \
-  --exp-dir $dir/exp-scaled-from30-lossr5 \
+  --exp-dir $dir/exp-scaled-norm \
   --max-duration 110 \
   --use-fp16 1 \
   --num-encoder-layers 24 \
@@ -25,4 +25,5 @@ dir=$( dirname -- "$0"; )
   --pronouncer-lambda 1 \
   --loss-off-scale 0.25 \
   --loss-on-scale 0.75 \
-  --loss-r-scale 5.0
+  --loss-r-scale 0.05 \
+  --loss-r-norm 1

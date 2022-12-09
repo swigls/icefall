@@ -279,6 +279,14 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--loss-r-norm",
+        type=str2bool,
+        default=False,
+        help="""If true, devide loss_r by loss_off.detach().
+        """,
+    )
+
+    parser.add_argument(
         "--loss-out-scale",
         type=float,
         default=1.0,
@@ -540,6 +548,7 @@ def get_transducer_model(params: AttributeDict) -> nn.Module:
         decoder_dim=params.decoder_dim,
         joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
+        loss_r_norm=params.loss_r_norm,
     )
     return model
 

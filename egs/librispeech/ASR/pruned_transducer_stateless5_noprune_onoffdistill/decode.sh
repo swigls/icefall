@@ -24,10 +24,10 @@ for plambda in 0 1; do
             --decode-chunk-size ${chunk} \
             --left-context ${left} \
             --causal-convolution 1 \
-            --epoch 30 \
+            --epoch 14 \
             --use-averaged-model True \
-            --avg 15 \
-            --exp-dir ./$dir/exp-scaled \
+            --avg 13 \
+            --exp-dir ./$dir/exp-scaled-from30-lossr5 \
             --beam-size 4 \
             --max-sym-per-frame 1 \
             --max-duration 600 \
