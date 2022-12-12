@@ -25,5 +25,5 @@ dir=$( dirname -- "$0"; )
   --pronouncer-lambda 1 \
   --loss-off-scale 0.25 \
   --loss-on-scale 0.75 \
-  --loss-r-scale 0.05 \
+  --loss-r-scale 1.0 \
   --loss-r-norm 1

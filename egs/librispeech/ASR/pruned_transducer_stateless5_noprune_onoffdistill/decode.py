@@ -205,6 +205,14 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--loss-r-norm",
+        type=str2bool,
+        default=False,
+        help=""" Whether to normalize loss-r
+        """,
+    )
+
+    parser.add_argument(
         "--bpe-model",
         type=str,
         default="data/lang_bpe_500/bpe.model",

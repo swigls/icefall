@@ -199,9 +199,8 @@ class Transducer(nn.Module):
             loss_r = torch.abs(
                 loss_on_r - loss_off.detach(),
             )  # [N,]
-            print(loss_off)
             if self.loss_r_norm:
-                loss_r = loss_r / loss_off.detach()
+                loss_r = loss_r / (loss_off.detach() / x_lens.float())
 
             loss_out = torch.zeros_like(loss_r)  # TODO
 
