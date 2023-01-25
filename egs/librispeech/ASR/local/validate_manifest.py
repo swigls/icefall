@@ -33,6 +33,7 @@ import argparse
 import logging
 from pathlib import Path
 
+import k2
 from lhotse import CutSet, load_manifest_lazy
 from lhotse.cut import Cut
 
