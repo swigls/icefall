@@ -122,7 +122,6 @@ class EcEmb(FeatureExtractor):
         super().__init__(config=config)
         config_dict = self.config.to_dict()
         config_dict.pop('device')
-        assert False, config_dict
         self.extractor = Wav2EcEmb(**config_dict).to(self.device).eval()
         #self.extractor = Wav2LogFilterBank(sampling_rate=24000, frame_shift=0.04/3).to(self.device).eval()
 
