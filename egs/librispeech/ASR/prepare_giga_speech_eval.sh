@@ -3,8 +3,8 @@
 set -eou pipefail
 
 nj=15
-stage=-1
-stop_stage=3 #100
+stage=0
+stop_stage=3
 
 # We assume dl_dir (download dir) contains the following
 # directories and files. If not, they will be downloaded
@@ -79,11 +79,6 @@ if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
     fi
     # Download XL, DEV and TEST sets by default.
     lhotse download gigaspeech \
-      --subset XL \
-      --subset L \
-      --subset M \
-      --subset S \
-      --subset XS \
       --subset DEV \
       --subset TEST \
       --host tsinghua \
@@ -97,11 +92,6 @@ if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
   # to $dl_dir/GigaSpeech
   mkdir -p data/manifests
   lhotse prepare gigaspeech \
-    --subset XL \
-    --subset L \
-    --subset M \
-    --subset S \
-    --subset XS \
     --subset DEV \
     --subset TEST \
     -j $nj \
