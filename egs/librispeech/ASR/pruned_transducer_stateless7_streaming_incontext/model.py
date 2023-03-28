@@ -35,10 +35,10 @@ class Transducer(nn.Module):
         self,
         encoder: EncoderInterface,
         decoder: nn.Module,
-        joiner: nn.Module,
+        #joiner: nn.Module,
         encoder_dim: int,
         decoder_dim: int,
-        joiner_dim: int,
+        #joiner_dim: int,
         vocab_size: int,
     ):
         """
@@ -63,13 +63,12 @@ class Transducer(nn.Module):
 
         self.encoder = encoder
         self.decoder = decoder
-        self.joiner = joiner
+        self.encoder_dim = encoder_dim
+        self.decoder_dim = decoder_dim
+        if encoder_dim != decoder_dim:
+            self.audio_embedding = torch.nn.Linear(encoder_dim, decoder_dim)
 
-        self.simple_am_proj = nn.Linear(
-            encoder_dim,
-            vocab_size,
-        )
-        self.simple_lm_proj = nn.Linear(decoder_dim, vocab_size)
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none', label_smoothing=0.)
 
     def forward(
         self,
@@ -114,8 +113,13 @@ class Transducer(nn.Module):
 
         assert x.size(0) == x_lens.size(0) == y.dim0
 
+        device = x.device
         encoder_out, x_lens = self.encoder(x, x_lens)
         assert torch.all(x_lens > 0)
+        B, T, D = encoder_out.shape
+
+        if self.encoder_dim != self.decoder_dim:
+            encoder_out = self.audio_embedding(encoder_out)  # (B, T, D)
 
         # Now for the decoder, i.e., the prediction network
         row_splits = y.shape.row_splits(1)
@@ -126,7 +130,66 @@ class Transducer(nn.Module):
 
         # sos_y_padded: [B, S + 1], start with SOS.
         sos_y_padded = sos_y.pad(mode="constant", padding_value=blank_id)
+        sos_y_padded = sos_y_padded.to(torch.int64)
+        #print(y_lens[0], y[0], sos_y_padded[0])
+        if torch.jit.is_tracing():
+            # This is for exporting to PNNX via ONNX
+            embedding_out = self.decoder.embedding(sos_y_padded)
+        else:
+            embedding_out = self.decoder.embedding(sos_y_padded.clamp(min=0)) * (sos_y_padded >= 0).unsqueeze(-1)
+        #embedding_out = F.relu(embedding_out)
+        U = embedding_out.shape[1]
 
+        ## Decoder part
+        decoder_in = torch.cat([encoder_out, embedding_out], dim=1)  # (B, T+U, D)
+        #print('decoder_in[0, T:]', decoder_in[0, T:])
+
+        # Just use causal mask for audio+text sequence
+        attn_mask = torch.triu(torch.ones(T+U, T+U, device=device) * float('-inf'), diagonal=1)  # (T+U, T+U)
+
+        # Length mask for x and y
+        batch_mask_x = (torch.arange(0, T, device=device) >= x_lens.view(B, 1))  # (B, T)
+        #print(y_lens, y_lens+1)
+        batch_mask_y = (torch.arange(0, U, device=device) >= (y_lens+1).view(B, 1))  # (B, U)
+        #print('batch_mask_x[0]', batch_mask_x[0].shape, batch_mask_x[0])
+        #print('batch_mask_y[0]', batch_mask_y[0].shape, batch_mask_y[0])
+        batch_mask = torch.cat(
+            [batch_mask_x,
+            batch_mask_y],
+            dim=1
+        )  # (B, T+U)
+        decoder_out = self.decoder(
+            decoder_in,
+            T,
+            attn_mask=attn_mask,
+            src_key_mask=batch_mask,
+        )  # (B, T+U, V), where U=S+1
+
+        # Apply log-softmax (only for the text sequence)
+        #logits = torch.nn.functional.log_softmax(decoder_out[:, T:], dim=-1)  # (B, U, V)
+        logits = decoder_out[:, T:]  #(B, U, V)
+        #print('logits[0]', logits[0])
+
+        # Measuring the loss
+        y_target = torch.cat(
+            [sos_y_padded[:, 1:],
+            torch.full([B, 1], blank_id, dtype=sos_y_padded.dtype, device=device)],
+            dim=1
+        )  # (B, U), where U=S+1
+        loss_all = self.loss_fn(
+            logits.permute(0, 2, 1),  # (B, V, U)
+            y_target,  # (B, U)
+        )  # (B, U)
+        y_est = torch.argmax(logits, dim=2)  # (B, U)
+        print('sos_y_padded[0]', sos_y_padded[0].shape, sos_y_padded[0])
+        print('y_est[0]', y_est[0].shape, y_est[0])
+        print('y_target[0]', y_target[0].shape, y_target[0])
+        loss = loss_all * torch.logical_not(batch_mask_y)  # (B,U)
+        loss = loss.sum()
+        #print('loss', loss)
+        return loss, loss
+
+        '''
         # decoder_out: [B, S + 1, decoder_dim]
         decoder_out = self.decoder(sos_y_padded)
 
@@ -193,3 +256,4 @@ class Transducer(nn.Module):
             )
 
         return (simple_loss, pruned_loss)
+        '''

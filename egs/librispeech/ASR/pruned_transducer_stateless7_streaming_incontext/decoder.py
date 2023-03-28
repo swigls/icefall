@@ -18,6 +18,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from zipformer import ZipformerEncoder, ZipformerEncoderLayer
+from conformer import ConformerEncoder, ConformerEncoderLayer, PositionalEncoding, RelPositionalEncoding
+from typing import Optional
+
 
 class Decoder(nn.Module):
     """This class modifies the stateless decoder from the following paper:
@@ -37,7 +41,7 @@ class Decoder(nn.Module):
         vocab_size: int,
         decoder_dim: int,
         blank_id: int,
-        context_size: int,
+        #context_size: int,
     ):
         """
         Args:
@@ -60,9 +64,10 @@ class Decoder(nn.Module):
         )
         self.blank_id = blank_id
 
-        assert context_size >= 1, context_size
-        self.context_size = context_size
+        #assert context_size >= 1, context_size
+        #self.context_size = context_size
         self.vocab_size = vocab_size
+        '''
         if context_size > 1:
             self.conv = nn.Conv1d(
                 in_channels=decoder_dim,
@@ -72,8 +77,80 @@ class Decoder(nn.Module):
                 groups=decoder_dim // 4,  # group size == 4
                 bias=False,
             )
+        '''
+        #self.decoder_pos = RelPositionalEncoding(decoder_dim, 0.)
+        self.decoder_pos = PositionalEncoding(decoder_dim, 0.)
+        layer = ConformerEncoderLayer(
+            d_model=decoder_dim,
+            nhead=8,
+            dim_feedforward=1024,  # 1536?
+            dropout=0.1,
+            cnn_module_kernel=15,  # 31?
+            causal=True,
+            rel_pos=False,
+        )
+        self.model = ConformerEncoder(
+            encoder_layer=layer,
+            num_layers=3,
+        )
+        '''
+        layer = ZipformerEncoderLayer(
+            d_model=decoder_dim,  # 384
+            attention_dim=256,  # 192
+            nhead=8,
+            feedforward_dim=1536,
+            dropout=0.1,
+            cnn_module_kernel=15,
+            rel_pos=False,
+            whiten_output=False,
+        )
+        self.model = ZipformerEncoder(
+            encoder_layer=layer,
+            num_layers=4,
+            dropout=0.1,
+            warmup_begin=0.,
+            warmup_end=0.,
+        )
+        '''
+        self.output_linear = nn.Linear(
+            decoder_dim,
+            vocab_size,
+        )
 
-    def forward(self, y: torch.Tensor, need_pad: bool = True) -> torch.Tensor:
+
+    def forward(
+        self,
+        input: torch.Tensor,
+        T: Optional[torch.Tensor],
+        attn_mask: Optional[torch.Tensor] = None,
+        src_key_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+          input:
+            A 3-D tensor of shape (N, T+U, D).
+          attn_mask:
+            A 3-D tensor of shape (T+U, T+U).
+          src_key_mask:
+            A 3-D tensor of shape (N, T+U)
+        Returns:
+          Return a tensor of shape (N, T+U, vocab_size).
+        """
+        #src, pos_emb = self.decoder_pos(y[:, :])  # src:(N, T+U, D), pos_emb:(N, 2(T+U)-1, D)
+        x, _ = self.decoder_pos(input[:, :T])  # x:(N, T, D)
+        y, _ = self.decoder_pos(input[:, T:])  # y:(N, U, D)
+        src = torch.cat([x, y], dim=1)  # (N, T+U, D)
+        src = src.permute(1, 0, 2)  # (T+U, N, D)
+        model_out = self.model(
+            src=src,
+            pos_emb=None,
+            mask=attn_mask,
+            src_key_padding_mask=src_key_mask,
+        )  # (T+U, N, D)
+        model_out = model_out.permute(1, 0, 2)  # (N, T+U, D)
+        out = self.output_linear(model_out)  # (N, T+U, vocab_size)
+        return out
+        '''
         """
         Args:
           y:
@@ -104,3 +181,4 @@ class Decoder(nn.Module):
             embedding_out = embedding_out.permute(0, 2, 1)
         embedding_out = F.relu(embedding_out)
         return embedding_out
+        '''

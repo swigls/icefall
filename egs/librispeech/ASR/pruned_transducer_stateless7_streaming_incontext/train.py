@@ -59,7 +59,7 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
 from decoder import Decoder
-from joiner import Joiner
+#from joiner import Joiner
 from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
@@ -158,7 +158,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--decoder-dim",
         type=int,
-        default=512,
+        default=384, #512,
         help="Embedding dimension in the decoder model.",
     )
 
@@ -178,6 +178,14 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         default=50,
         help="""Chunk length of dynamic training, the chunk size would be either
         max sequence length of current batch or uniformly sampled from (1, short_chunk_size).
+        """,
+    )
+
+    parser.add_argument(
+        "--short-chunk-threshold",
+        type=float,
+        default=0.75,
+        help="""Short-chunk training probability of dynamic training (between 0 and 1)
         """,
     )
 
@@ -480,6 +488,7 @@ def get_encoder_model(params: AttributeDict) -> nn.Module:
         cnn_module_kernels=to_int_tuple(params.cnn_module_kernels),
         num_encoder_layers=to_int_tuple(params.num_encoder_layers),
         num_left_chunks=params.num_left_chunks,
+        short_chunk_threshold=params.short_chunk_threshold,
         short_chunk_size=params.short_chunk_size,
         decode_chunk_size=params.decode_chunk_len // 2,
     )
@@ -491,7 +500,7 @@ def get_decoder_model(params: AttributeDict) -> nn.Module:
         vocab_size=params.vocab_size,
         decoder_dim=params.decoder_dim,
         blank_id=params.blank_id,
-        context_size=params.context_size,
+        #context_size=params.context_size,
     )
     return decoder
 
@@ -708,7 +717,8 @@ def compute_loss(
             else 0.1 + 0.9 * (batch_idx_train / warm_step)
         )
 
-        loss = simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
+        #loss = simple_loss_scale * simple_loss + pruned_loss_scale * pruned_loss
+        loss = simple_loss
 
     assert loss.requires_grad == is_training
 
@@ -891,9 +901,10 @@ def train_one_epoch(
             if cur_grad_scale < 0.01:
                 logging.warning(f"Grad scale is small: {cur_grad_scale}")
             if cur_grad_scale < 1.0e-05:
-                raise RuntimeError(
-                    f"grad_scale is too small, exiting: {cur_grad_scale}"
-                )
+                pass
+                #raise RuntimeError(
+                #    f"grad_scale is too small, exiting: {cur_grad_scale}"
+                #)
 
         if batch_idx % params.log_interval == 0:
             cur_lr = scheduler.get_last_lr()[0]
@@ -1109,6 +1120,7 @@ def run(rank, world_size, args):
     valid_cuts += librispeech.dev_other_cuts()
     valid_dl = librispeech.valid_dataloaders(valid_cuts)
 
+    '''
     if not params.print_diagnostics:
         scan_pessimistic_batches_for_oom(
             model=model,
@@ -1117,6 +1129,7 @@ def run(rank, world_size, args):
             sp=sp,
             params=params,
         )
+    '''
 
     scaler = GradScaler(enabled=params.use_fp16, init_scale=1.0)
     if checkpoints and "grad_scaler" in checkpoints:

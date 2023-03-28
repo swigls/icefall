@@ -788,6 +788,8 @@ class ZipformerEncoderLayer(nn.Module):
         dropout: float = 0.1,
         cnn_module_kernel: int = 31,
         pos_dim: int = 4,
+        rel_pos: bool = True,
+        whiten_output: bool = True,
     ) -> None:
         super(ZipformerEncoderLayer, self).__init__()
 
@@ -798,13 +800,23 @@ class ZipformerEncoderLayer(nn.Module):
         # will be written to, see set_batch_count()
         self.batch_count = 0
 
-        self.self_attn = RelPositionMultiheadAttention(
-            d_model,
-            attention_dim,
-            nhead,
-            pos_dim,
-            dropout=0.0,
-        )
+        if rel_pos:
+            self.self_attn = RelPositionMultiheadAttention(
+                d_model,
+                attention_dim,
+                nhead,
+                pos_dim,
+                dropout=0.0,
+            )
+        else:
+            self.self_attn = PositionMultiheadAttention(
+                d_model,
+                attention_dim,
+                nhead,
+                pos_dim,
+                dropout=0.0,
+                whiten_output=whiten_output,
+            )
 
         self.pooling = PoolingModule(d_model)
 
@@ -830,9 +842,12 @@ class ZipformerEncoderLayer(nn.Module):
             max_positive=0.55,
             max_abs=6.0,
         )
-        self.whiten = Whiten(
-            num_groups=1, whitening_limit=5.0, prob=(0.025, 0.25), grad_scale=0.01
-        )
+        if whiten_output:
+            self.whiten = Whiten(
+                num_groups=1, whitening_limit=5.0, prob=(0.025, 0.25), grad_scale=0.01
+            )
+        else:
+            self.whiten = nn.Identity()
 
     def get_bypass_scale(self):
         if torch.jit.is_scripting() or not self.training:
@@ -1194,6 +1209,7 @@ class ZipformerEncoder(nn.Module):
     def forward(
         self,
         src: Tensor,
+        pos_emb: Optional[Tensor] = None,
         # Note: The type of feature_mask should be Union[float, Tensor],
         # but to make torch.jit.script() work, we use `float` here
         feature_mask: float = 1.0,
@@ -1218,7 +1234,9 @@ class ZipformerEncoder(nn.Module):
 
         Returns: (x, x_no_combine), both of shape (S, N, E)
         """
-        pos_emb = self.encoder_pos(src)
+        if pos_emb is None:
+            pos_emb = self.encoder_pos(src)
+
         output = src
 
         if torch.jit.is_scripting():
@@ -1732,6 +1750,725 @@ class RelPositionalEncoding(torch.nn.Module):
         return self.dropout(pos_emb)
 
 
+class PositionMultiheadAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        attention_dim: int,
+        num_heads: int,
+        pos_dim: int,
+        dropout: float = 0.0,
+        whiten_output: bool = True,
+    ) -> None:
+        super(PositionMultiheadAttention, self).__init__()
+        self.embed_dim = embed_dim
+        self.attention_dim = attention_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.head_dim = attention_dim // num_heads
+        self.pos_dim = pos_dim
+        assert self.head_dim % 2 == 0, self.head_dim
+        assert self.head_dim * num_heads == attention_dim, (
+            self.head_dim,
+            num_heads,
+            attention_dim,
+        )
+
+        # the initial_scale is supposed to take over the "scaling" factor of
+        # head_dim ** -0.5, dividing it between the query and key.
+        in_proj_dim = (
+            2 * attention_dim  # query, key
+            + attention_dim // 2  # value
+            #+ pos_dim * num_heads  # positional encoding query
+        )
+
+        self.in_proj = ScaledLinear(
+            embed_dim, in_proj_dim, bias=True, initial_scale=self.head_dim**-0.25
+        )
+
+        # self.whiten_values is applied on the values in forward();
+        # it just copies the keys but prevents low-rank distribution by modifying grads.
+        self.whiten_values = Whiten(
+            num_groups=num_heads,
+            whitening_limit=2.0,
+            prob=(0.025, 0.25),
+            grad_scale=0.025,
+        ) if whiten_output else nn.Identity()
+        self.whiten_keys = Whiten(
+            num_groups=num_heads,
+            whitening_limit=2.0,
+            prob=(0.025, 0.25),
+            grad_scale=0.025,
+        ) if whiten_output else nn.Identity()
+
+        '''
+        # linear transformation for positional encoding.
+        self.linear_pos = ScaledLinear(
+            embed_dim, num_heads * pos_dim, bias=False, initial_scale=0.05
+        )
+        '''
+
+        # the following are for diagnosics only, see --print-diagnostics option.
+        # they only copy their inputs.
+        '''
+        self.copy_pos_query = Identity()
+        '''
+        self.copy_query = Identity()
+
+        self.out_proj = ScaledLinear(
+            attention_dim // 2, embed_dim, bias=True, initial_scale=0.05
+        )
+
+        self.in_proj2 = nn.Linear(embed_dim, attention_dim // 2, bias=False)
+        self.out_proj2 = ScaledLinear(
+            attention_dim // 2, embed_dim, bias=True, initial_scale=0.05
+        )
+        # self.whiten_values2 is applied on the values in forward2()
+        self.whiten_values2 = Whiten(
+            num_groups=num_heads,
+            whitening_limit=2.0,
+            prob=(0.025, 0.25),
+            grad_scale=0.025,
+        ) if whiten_output else nn.Identity()
+
+    def forward(
+        self,
+        x: Tensor,
+        pos_emb: Tensor,
+        key_padding_mask: Optional[Tensor] = None,
+        attn_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        r"""
+        Args:
+            x: input to be projected to query, key, value
+            pos_emb: Positional embedding tensor
+            key_padding_mask: if provided, specified padding elements in the key will
+                be ignored by the attention. When given a binary mask and a value is True,
+                the corresponding value on the attention layer will be ignored. When given
+                a byte mask and a value is non-zero, the corresponding value on the attention
+                layer will be ignored
+            attn_mask: 2D or 3D mask that prevents attention to certain positions. A 2D mask will be broadcasted for all
+                the batches while a 3D mask allows to specify a different mask for the entries of each batch.
+
+        Shape:
+            - Inputs:
+            - x: :math:`(L, N, E)` where L is the target sequence length, N is the batch size, E is
+            the embedding dimension.
+            - pos_emb: :math:`(N, 2*L-1, E)` where L is the target sequence length, N is the batch size, E is
+            the embedding dimension.
+            - key_padding_mask: :math:`(N, S)` where N is the batch size, S is the source sequence length.
+            If a ByteTensor is provided, the non-zero positions will be ignored while the position
+            with the zero positions will be unchanged. If a BoolTensor is provided, the positions with the
+            value of ``True`` will be ignored while the position with the value of ``False`` will be unchanged.
+            - attn_mask: 2D mask :math:`(L, S)` where L is the target sequence length, S is the source sequence length.
+            3D mask :math:`(N*num_heads, L, S)` where N is the batch size, L is the target sequence length,
+            S is the source sequence length. attn_mask ensure that position i is allowed to attend the unmasked
+            positions. If a ByteTensor is provided, the non-zero positions are not allowed to attend
+            while the zero positions will be unchanged. If a BoolTensor is provided, positions with ``True``
+            is not allowed to attend while ``False`` values will be unchanged. If a FloatTensor
+            is provided, it will be added to the attention weight.
+
+            - Returns: (attn_output, attn_weights)
+
+             - attn_output: :math:`(S, N, E)` where S is the sequence length, N is the batch size,
+                E is the embedding dimension.
+              - attn_weights: :math:`(N * N, S, S)` where N is the batch size, H is the num-heads
+                 and S is the sequence length.
+        """
+        x, weights = self.multi_head_attention_forward(
+            self.in_proj(x),
+            #self.linear_pos(pos_emb),
+            self.attention_dim,
+            self.num_heads,
+            self.dropout,
+            self.out_proj.weight,
+            self.out_proj.bias,
+            training=self.training,
+            key_padding_mask=key_padding_mask,
+            attn_mask=attn_mask,
+        )
+        return x, weights
+
+    def streaming_forward(
+        self,
+        x: Tensor,
+        pos_emb: Tensor,
+        cached_key: Tensor,
+        cached_val: Tensor,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        r"""
+        Args:
+            x: input to be projected to query, key, value
+            pos_emb: Positional embedding tensor
+
+        Shape:
+            - Inputs:
+            - x: :math:`(L, N, E)` where L is the target sequence length, N is the batch size, E is
+            the embedding dimension.
+            - pos_emb: :math:`(N, 2*L-1, E)` where L is the target sequence length, N is the batch size, E is
+            the embedding dimension.
+            - cached_key: :math:`(left_context_len, N, K)`, where N is the batch size, K is the key dimension.
+            - cached_val: :math:`(left_context_len, N, V)`, where N is the batch size, V is the value dimension.
+
+            - Returns: (attn_output, attn_weights, cached_key, cached_val)
+
+              - attn_output: :math:`(S, N, E)` where S is the sequence length, N is the batch size,
+                E is the embedding dimension.
+              - attn_weights: :math:`(N * N, S, S)` where N is the batch size, H is the num-heads
+                 and S is the sequence length.
+              - cached_key: :math:`(left_context_len, N, K)`, updated cached attention key tensor of
+                left context
+              - cached_val: :math:`(left_context_len, N, K)`, updated cached attention value tensor of
+        """
+        (
+            x,
+            weights,
+            cached_key,
+            cached_val,
+        ) = self.streaming_multi_head_attention_forward(
+            self.in_proj(x),
+            #self.linear_pos(pos_emb),
+            self.attention_dim,
+            self.num_heads,
+            self.out_proj.weight,
+            self.out_proj.bias,
+            cached_key=cached_key,
+            cached_val=cached_val,
+        )
+        return x, weights, cached_key, cached_val
+
+    def multi_head_attention_forward(
+        self,
+        x_proj: Tensor,
+        #pos: Tensor,
+        attention_dim: int,
+        num_heads: int,
+        dropout_p: float,
+        out_proj_weight: Tensor,
+        out_proj_bias: Tensor,
+        training: bool = True,
+        key_padding_mask: Optional[Tensor] = None,
+        attn_mask: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        r"""
+        Args:
+            x_proj: the projected input, to be split into query, key, value.
+            pos: head-specific biases arising from the positional embeddings.
+            attention_dim: dimension inside attention mechanism
+            num_heads: parallel attention heads.
+            dropout_p: probability of an element to be zeroed.
+            out_proj_weight, out_proj_bias: the output projection weight and bias.
+            training: apply dropout if is ``True``.
+            key_padding_mask: if provided, specified padding elements in the key will
+                be ignored by the attention. This is an binary mask. When the value is True,
+                the corresponding value on the attention layer will be filled with -inf.
+            attn_mask: 2D or 3D mask that prevents attention to certain positions. A 2D mask will be broadcasted for all
+                the batches while a 3D mask allows to specify a different mask for the entries of each batch.
+
+        Shape:
+            Inputs:
+            - x: :math:`(L, N, 7 * A // 2)` where L is the target sequence length, N is the batch size, A is
+              the attention dimension.  Will be split into (query, key, value, pos).
+            - pos: :math:`(N, 2*L-1, A//2)` or :math:`(1, 2*L-1, A//2)` where L is the sequence
+              length, N is the batch size, and A is the attention dim.
+            - key_padding_mask: :math:`(N, S)` where N is the batch size, S is the source sequence length.
+            If a ByteTensor is provided, the non-zero positions will be ignored while the zero positions
+            will be unchanged. If a BoolTensor is provided, the positions with the
+            value of ``True`` will be ignored while the position with the value of ``False`` will be unchanged.
+            - attn_mask: 2D mask :math:`(L, S)` where L is the target sequence length, S is the source sequence length.
+            3D mask :math:`(N*num_heads, L, S)` where N is the batch size, L is the target sequence length,
+            S is the source sequence length. attn_mask ensures that position i is allowed to attend the unmasked
+            positions. If a ByteTensor is provided, the non-zero positions are not allowed to attend
+            while the zero positions will be unchanged. If a BoolTensor is provided, positions with ``True``
+            are not allowed to attend while ``False`` values will be unchanged. If a FloatTensor
+            is provided, it will be added to the attention weight.
+
+            Outputs:
+            - attn_output: :math:`(L, N, E)` where L is the target sequence length, N is the batch size,
+              E is the embedding dimension.
+            - attn_weights: :math:`(N * H, S, S)` where N is the batch size,
+              H is the num-heads, S is the sequence length.
+        """
+
+        seq_len, bsz, _ = x_proj.size()
+
+        head_dim = attention_dim // num_heads
+        '''
+        pos_dim = self.pos_dim  # positional-encoding dim per head
+        '''
+        assert (
+            head_dim * num_heads == attention_dim
+        ), f"attention_dim must be divisible by num_heads: {head_dim}, {num_heads}, {attention_dim}"
+
+        # self-attention
+        q = x_proj[..., 0:attention_dim]
+        k = x_proj[..., attention_dim : 2 * attention_dim]
+        value_dim = attention_dim // 2
+        v = x_proj[..., 2 * attention_dim : 2 * attention_dim + value_dim]
+        '''
+        # p is the position-encoding query, its dimension is num_heads*pos_dim..
+        p = x_proj[..., 2 * attention_dim + value_dim :]
+        '''
+
+        k = self.whiten_keys(k)  # does nothing in the forward pass.
+        v = self.whiten_values(v)  # does nothing in the forward pass.
+        q = self.copy_query(q)  # for diagnostics only, does nothing.
+        '''
+        p = self.copy_pos_query(p)  # for diagnostics only, does nothing.
+        '''
+
+        if attn_mask is not None:
+            assert (
+                attn_mask.dtype == torch.float32
+                or attn_mask.dtype == torch.float64
+                or attn_mask.dtype == torch.float16
+                or attn_mask.dtype == torch.uint8
+                or attn_mask.dtype == torch.bool
+            ), "Only float, byte, and bool types are supported for attn_mask, not {}".format(
+                attn_mask.dtype
+            )
+            if attn_mask.dtype == torch.uint8:
+                warnings.warn(
+                    "Byte tensor for attn_mask is deprecated. Use bool tensor instead."
+                )
+                attn_mask = attn_mask.to(torch.bool)
+
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.unsqueeze(0)
+                if list(attn_mask.size()) != [1, seq_len, seq_len]:
+                    raise RuntimeError("The size of the 2D attn_mask is not correct.")
+            elif attn_mask.dim() == 3:
+                if list(attn_mask.size()) != [
+                    bsz * num_heads,
+                    seq_len,
+                    seq_len,
+                ]:
+                    raise RuntimeError("The size of the 3D attn_mask is not correct.")
+            else:
+                raise RuntimeError(
+                    "attn_mask's dimension {} is not supported".format(attn_mask.dim())
+                )
+            # attn_mask's dim is 3 now.
+
+        # convert ByteTensor key_padding_mask to bool
+        if key_padding_mask is not None and key_padding_mask.dtype == torch.uint8:
+            warnings.warn(
+                "Byte tensor for key_padding_mask is deprecated. Use bool tensor instead."
+            )
+            key_padding_mask = key_padding_mask.to(torch.bool)
+
+        q = q.reshape(seq_len, bsz, num_heads, head_dim)
+        '''
+        p = p.reshape(seq_len, bsz, num_heads, pos_dim)
+        '''
+        k = k.reshape(seq_len, bsz, num_heads, head_dim)
+        v = v.reshape(seq_len, bsz * num_heads, head_dim // 2).transpose(0, 1)
+
+        if key_padding_mask is not None:
+            assert key_padding_mask.size(0) == bsz, "{} == {}".format(
+                key_padding_mask.size(0), bsz
+            )
+            assert key_padding_mask.size(1) == seq_len, "{} == {}".format(
+                key_padding_mask.size(1), seq_len
+            )
+
+        q = q.permute(1, 2, 0, 3)  # (batch, head, time1, head_dim)
+        '''
+        p = p.permute(1, 2, 0, 3)  # (batch, head, time1, pos_dim)
+        '''
+        k = k.permute(1, 2, 3, 0)  # (batch, head, d_k, time2)
+
+        '''
+        seq_len2 = 2 * seq_len - 1
+        pos = pos.reshape(1, seq_len2, num_heads, pos_dim).permute(0, 2, 3, 1)
+        # pos shape now: (batch, head, pos_dim, seq_len2)
+
+        # (batch, head, time1, pos_dim) x (1, head, pos_dim, seq_len2) -> (batch, head, time1, seq_len2)
+        #  [where seq_len2 represents relative position.]
+        pos_weights = torch.matmul(p, pos)
+        # the following .as_strided() expression converts the last axis of pos_weights from relative
+        # to absolute position.  I don't know whether I might have got the time-offsets backwards or
+        # not, but let this code define which way round it is supposed to be.
+        if torch.jit.is_tracing():
+            (batch_size, num_heads, time1, n) = pos_weights.shape
+            rows = torch.arange(start=time1 - 1, end=-1, step=-1)
+            cols = torch.arange(seq_len)
+            rows = rows.repeat(batch_size * num_heads).unsqueeze(-1)
+            indexes = rows + cols
+            pos_weights = pos_weights.reshape(-1, n)
+            pos_weights = torch.gather(pos_weights, dim=1, index=indexes)
+            pos_weights = pos_weights.reshape(batch_size, num_heads, time1, seq_len)
+        else:
+            pos_weights = pos_weights.as_strided(
+                (bsz, num_heads, seq_len, seq_len),
+                (
+                    pos_weights.stride(0),
+                    pos_weights.stride(1),
+                    pos_weights.stride(2) - pos_weights.stride(3),
+                    pos_weights.stride(3),
+                ),
+                storage_offset=pos_weights.stride(3) * (seq_len - 1),
+            )
+
+        # caution: they are really scores at this point.
+        attn_output_weights = torch.matmul(q, k) + pos_weights
+        '''
+        attn_output_weights = torch.matmul(q, k)
+
+        if not torch.jit.is_scripting():
+            if training and random.random() < 0.1:
+                # This is a harder way of limiting the attention scores to not be too large.
+                # It incurs a penalty if any of them has an absolute value greater than 50.0.
+                # this should be outside the normal range of the attention scores.  We use
+                # this mechanism instead of, say, a limit on entropy, because once the entropy
+                # gets very small gradients through the softmax can become very small, and
+                # some mechanisms like that become ineffective.
+                attn_output_weights = penalize_abs_values_gt(
+                    attn_output_weights, limit=25.0, penalty=1.0e-04
+                )
+
+        # attn_output_weights: (batch, head, time1, time2)
+        attn_output_weights = attn_output_weights.view(
+            bsz * num_heads, seq_len, seq_len
+        )
+
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                attn_output_weights = attn_output_weights.masked_fill(
+                    attn_mask, float("-inf")
+                )
+            else:
+                attn_output_weights = attn_output_weights + attn_mask
+
+        if key_padding_mask is not None:
+            attn_output_weights = attn_output_weights.view(
+                bsz, num_heads, seq_len, seq_len
+            )
+            attn_output_weights = attn_output_weights.masked_fill(
+                key_padding_mask.unsqueeze(1).unsqueeze(2),
+                float("-inf"),
+            )
+            attn_output_weights = attn_output_weights.view(
+                bsz * num_heads, seq_len, seq_len
+            )
+
+        # Using this version of softmax, defined in scaling.py,
+        # should save a little of the memory used in backprop by, if
+        # we are in automatic mixed precision mode (amp) == autocast,
+        # only storing the half-precision output for backprop purposes.
+        attn_output_weights = softmax(attn_output_weights, dim=-1)
+
+        # If we are using chunk-wise attention mask and setting a limited
+        # num_left_chunks, the attention may only see the padding values which
+        # will also be masked out by `key_padding_mask`. At this circumstances,
+        # the whole column of `attn_output_weights` will be `-inf`
+        # (i.e. be `nan` after softmax). So we fill `0.0` at the masking
+        # positions to avoid invalid loss value below.
+        if (
+            attn_mask is not None
+            and attn_mask.dtype == torch.bool
+            and key_padding_mask is not None
+        ):
+            if attn_mask.size(0) != 1:
+                attn_mask = attn_mask.view(bsz, num_heads, seq_len, seq_len)
+                combined_mask = attn_mask | key_padding_mask.unsqueeze(1).unsqueeze(2)
+            else:
+                # attn_mask.shape == (1, tgt_len, src_len)
+                combined_mask = attn_mask.unsqueeze(0) | key_padding_mask.unsqueeze(
+                    1
+                ).unsqueeze(2)
+
+            attn_output_weights = attn_output_weights.view(
+                bsz, num_heads, seq_len, seq_len
+            )
+            attn_output_weights = attn_output_weights.masked_fill(combined_mask, 0.0)
+            attn_output_weights = attn_output_weights.view(
+                bsz * num_heads, seq_len, seq_len
+            )
+
+        attn_output_weights = nn.functional.dropout(
+            attn_output_weights, p=dropout_p, training=training
+        )
+
+        attn_output = torch.bmm(attn_output_weights, v)
+        assert list(attn_output.size()) == [bsz * num_heads, seq_len, head_dim // 2]
+        attn_output = (
+            attn_output.transpose(0, 1)
+            .contiguous()
+            .view(seq_len, bsz, attention_dim // 2)
+        )
+        attn_output = nn.functional.linear(attn_output, out_proj_weight, out_proj_bias)
+
+        return attn_output, attn_output_weights
+
+    def streaming_multi_head_attention_forward(
+        self,
+        x_proj: Tensor,
+        #pos: Tensor,
+        attention_dim: int,
+        num_heads: int,
+        out_proj_weight: Tensor,
+        out_proj_bias: Tensor,
+        cached_key: Tensor,
+        cached_val: Tensor,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        r"""
+        Args:
+            x_proj: the projected input, to be split into query, key, value.
+            pos: head-specific biases arising from the positional embeddings.
+            attention_dim: dimension inside attention mechanism
+            num_heads: parallel attention heads.
+            out_proj_weight, out_proj_bias: the output projection weight and bias.
+            cached_key: cached attention key tensor of left context.
+            cached_val: cached attention value tensor of left context.
+
+        Shape:
+            Inputs:
+            - x: :math:`(L, N, 7 * A // 2)` where L is the target sequence length, N is the batch size, A is
+              the attention dimension.  Will be split into (query, key, value, pos).
+            - pos: :math:`(N, 2*L-1, A//2)` or :math:`(1, 2*L-1, A//2)` where L is the sequence
+              length, N is the batch size, and A is the attention dim.
+            If a ByteTensor is provided, the non-zero positions will be ignored while the zero positions
+            will be unchanged. If a BoolTensor is provided, the positions with the
+            value of ``True`` will be ignored while the position with the value of ``False`` will be unchanged.
+
+            Outputs:
+            - attn_output: :math:`(L, N, E)` where L is the target sequence length, N is the batch size,
+              E is the embedding dimension.
+            - attn_weights: :math:`(N * H, S, S)` where N is the batch size,
+              H is the num-heads, S is the sequence length.
+            - cached_key: :math:`(left_context_len, N, K)`, updated cached attention key tensor of left context.
+            - cached_val: :math:`(left_context_len, N, K)`, updated cached attention value tensor of left context.
+        """
+
+        seq_len, bsz, _ = x_proj.size()
+
+        head_dim = attention_dim // num_heads
+        '''
+        pos_dim = self.pos_dim  # positional-encoding dim per head
+        '''
+        assert (
+            head_dim * num_heads == attention_dim
+        ), f"attention_dim must be divisible by num_heads: {head_dim}, {num_heads}, {attention_dim}"
+
+        # self-attention
+        q = x_proj[..., 0:attention_dim]
+        k = x_proj[..., attention_dim : 2 * attention_dim]
+        value_dim = attention_dim // 2
+        v = x_proj[..., 2 * attention_dim : 2 * attention_dim + value_dim]
+        '''
+        # p is the position-encoding query, its dimension is num_heads*pos_dim..
+        p = x_proj[..., 2 * attention_dim + value_dim :]
+        '''
+
+        left_context_len = cached_key.shape[0]
+        assert left_context_len > 0, left_context_len
+        assert cached_key.shape[0] == cached_val.shape[0], (
+            cached_key.shape,
+            cached_val.shape,
+        )
+        # Pad cached left contexts
+        k = torch.cat([cached_key, k], dim=0)
+        v = torch.cat([cached_val, v], dim=0)
+        # Update cached left contexts
+        cached_key = k[-left_context_len:, ...]
+        cached_val = v[-left_context_len:, ...]
+
+        # The length of key and value
+        kv_len = k.shape[0]
+
+        q = q.reshape(seq_len, bsz, num_heads, head_dim)
+        '''
+        p = p.reshape(seq_len, bsz, num_heads, pos_dim)
+        '''
+        k = k.reshape(kv_len, bsz, num_heads, head_dim)
+        v = v.reshape(kv_len, bsz * num_heads, head_dim // 2).transpose(0, 1)
+
+        q = q.permute(1, 2, 0, 3)  # (batch, head, time1, head_dim)
+        '''
+        p = p.permute(1, 2, 0, 3)  # (batch, head, time1, pos_dim)
+        '''
+        k = k.permute(1, 2, 3, 0)  # (batch, head, d_k, time2)
+
+        '''
+        seq_len2 = 2 * seq_len - 1 + left_context_len
+        pos = pos.reshape(1, seq_len2, num_heads, pos_dim).permute(0, 2, 3, 1)
+        # pos shape now: (batch, head, pos_dim, seq_len2)
+
+        # (batch, head, time1, pos_dim) x (1, head, pos_dim, seq_len2) -> (batch, head, time1, seq_len2)
+        #  [where seq_len2 represents relative position.]
+        pos_weights = torch.matmul(p, pos)
+        # the following .as_strided() expression converts the last axis of pos_weights from relative
+        # to absolute position.  I don't know whether I might have got the time-offsets backwards or
+        # not, but let this code define which way round it is supposed to be.
+        if torch.jit.is_tracing():
+            (batch_size, num_heads, time1, n) = pos_weights.shape
+            rows = torch.arange(start=time1 - 1, end=-1, step=-1)
+            cols = torch.arange(kv_len)
+            rows = rows.repeat(batch_size * num_heads).unsqueeze(-1)
+            indexes = rows + cols
+            pos_weights = pos_weights.reshape(-1, n)
+            pos_weights = torch.gather(pos_weights, dim=1, index=indexes)
+            pos_weights = pos_weights.reshape(batch_size, num_heads, time1, kv_len)
+        else:
+            pos_weights = pos_weights.as_strided(
+                (bsz, num_heads, seq_len, kv_len),
+                (
+                    pos_weights.stride(0),
+                    pos_weights.stride(1),
+                    pos_weights.stride(2) - pos_weights.stride(3),
+                    pos_weights.stride(3),
+                ),
+                storage_offset=pos_weights.stride(3) * (seq_len - 1),
+            )
+
+        # caution: they are really scores at this point.
+        attn_output_weights = torch.matmul(q, k) + pos_weights
+        '''
+        attn_output_weights = torch.matmul(q, k)
+
+        # attn_output_weights: (batch, head, time1, time2)
+        attn_output_weights = attn_output_weights.view(bsz * num_heads, seq_len, kv_len)
+
+        # Using this version of softmax, defined in scaling.py,
+        # should save a little of the memory used in backprop by, if
+        # we are in automatic mixed precision mode (amp) == autocast,
+        # only storing the half-precision output for backprop purposes.
+        attn_output_weights = softmax(attn_output_weights, dim=-1)
+
+        attn_output = torch.bmm(attn_output_weights, v)
+        assert list(attn_output.size()) == [bsz * num_heads, seq_len, head_dim // 2]
+        attn_output = (
+            attn_output.transpose(0, 1)
+            .contiguous()
+            .view(seq_len, bsz, attention_dim // 2)
+        )
+        attn_output = nn.functional.linear(attn_output, out_proj_weight, out_proj_bias)
+
+        return attn_output, attn_output_weights, cached_key, cached_val
+
+    def forward2(
+        self,
+        x: Tensor,
+        attn_weights: Tensor,
+    ) -> Tensor:
+        """
+        Second forward function, where we re-use the attn_weights returned by the first forward function
+        but with different input.
+        Args:
+               x: input, of shape (seq_len, batch_size, embed_dim)
+           attn_weights: attention weights returned by forward(), of shape (batch_size * num_heads, seq_len, seq_len)
+        Returns:
+               output of the same shape as x, i.e. (seq_len, batch_size, embed_dim)
+        """
+        num_heads = self.num_heads
+        (seq_len, bsz, embed_dim) = x.shape
+        head_dim = self.attention_dim // num_heads
+        # v: (tgt_len, bsz, embed_dim // 2)
+        v = self.in_proj2(x)
+        v = self.whiten_values2(v)  # does nothing in the forward pass.
+        v = v.reshape(seq_len, bsz * num_heads, head_dim // 2).transpose(0, 1)
+
+        # now v: (bsz * num_heads, seq_len, head_dim // 2)
+        attn_output = torch.bmm(attn_weights, v)
+
+        if not torch.jit.is_scripting():
+            if random.random() < 0.001 or __name__ == "__main__":
+                self._print_attn_stats(attn_weights, attn_output)
+
+        # attn_output: (bsz * num_heads, seq_len, head_dim)
+        attn_output = (
+            attn_output.transpose(0, 1)
+            .contiguous()
+            .view(seq_len, bsz, self.attention_dim // 2)
+        )
+        # returned value is of shape (seq_len, bsz, embed_dim), like x.
+        return self.out_proj2(attn_output)
+
+    def streaming_forward2(
+        self,
+        x: Tensor,
+        attn_weights: Tensor,
+        cached_val: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Second forward function, where we re-use the attn_weights returned by the first forward function
+        but with different input.
+        Args:
+            x: input, of shape (seq_len, batch_size, embed_dim)
+            attn_weights: attention weights returned by forward(), of shape (batch_size * num_heads, seq_len, seq_len)
+            cached_val: cached attention value tensor of left context.
+        Returns:
+            - output of the same shape as x, i.e. (seq_len, batch_size, embed_dim)
+            - updated cached attention value tensor of left context.
+        """
+        num_heads = self.num_heads
+        (seq_len, bsz, embed_dim) = x.shape
+        head_dim = self.attention_dim // num_heads
+        # v: (tgt_len, bsz, embed_dim // 2)
+        v = self.in_proj2(x)
+
+        left_context_len = cached_val.shape[0]
+        assert left_context_len > 0, left_context_len
+        v = torch.cat([cached_val, v], dim=0)
+        cached_val = v[-left_context_len:]
+
+        seq_len2 = left_context_len + seq_len
+        v = v.reshape(seq_len2, bsz * num_heads, head_dim // 2).transpose(0, 1)
+
+        # now v: (bsz * num_heads, seq_len, head_dim // 2)
+        attn_output = torch.bmm(attn_weights, v)
+
+        # attn_output: (bsz * num_heads, seq_len, head_dim)
+        attn_output = (
+            attn_output.transpose(0, 1)
+            .contiguous()
+            .view(seq_len, bsz, self.attention_dim // 2)
+        )
+        # returned value is of shape (seq_len, bsz, embed_dim), like x.
+        return self.out_proj2(attn_output), cached_val
+
+    def _print_attn_stats(self, attn_weights: Tensor, attn_output: Tensor):
+        # attn_weights: (batch_size * num_heads, seq_len, seq_len)
+        # attn_output: (bsz * num_heads, seq_len, head_dim)
+        (n, seq_len, head_dim) = attn_output.shape
+        num_heads = self.num_heads
+        bsz = n // num_heads
+
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=False):
+                attn_weights = attn_weights.to(torch.float32)
+                attn_output = attn_output.to(torch.float32)
+                attn_weights_entropy = (
+                    -((attn_weights + 1.0e-20).log() * attn_weights)
+                    .sum(dim=-1)
+                    .reshape(bsz, num_heads, seq_len)
+                    .mean(dim=(0, 2))
+                )
+                attn_output = attn_output.reshape(bsz, num_heads, seq_len, head_dim)
+                attn_output = attn_output.permute(1, 0, 2, 3).reshape(
+                    num_heads, bsz * seq_len, head_dim
+                )
+                attn_output_mean = attn_output.mean(dim=1, keepdim=True)
+                attn_output = attn_output - attn_output_mean
+                attn_covar = torch.matmul(attn_output.transpose(1, 2), attn_output) / (
+                    bsz * seq_len
+                )
+                # attn_covar: (num_heads, head_dim, head_dim)
+                # eigs, _ = torch.symeig(attn_covar)
+                # logging.info(f"attn_weights_entropy = {attn_weights_entropy}, output_eigs = {eigs}")
+
+                attn_covar = _diag(attn_covar).mean(dim=1)  # (num_heads,)
+                embed_dim = self.in_proj2.weight.shape[1]
+                in_proj_covar = (
+                    self.in_proj2.weight.reshape(num_heads, head_dim, embed_dim) ** 2
+                ).mean(dim=(1, 2))
+                out_proj_covar = (
+                    self.out_proj2.weight.reshape(embed_dim, num_heads, head_dim) ** 2
+                ).mean(dim=(0, 2))
+                logging.info(
+                    f"attn_weights_entropy = {attn_weights_entropy}, covar={attn_covar}, in_proj_covar={in_proj_covar}, out_proj_covar={out_proj_covar}"
+                )
 class RelPositionMultiheadAttention(nn.Module):
     r"""Multi-Head Attention layer with relative position encoding
 
