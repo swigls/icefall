@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES="1,2,3,4,6"
+export CUDA_VISIBLE_DEVICES="1,2,3,4,5"
 
 dir=$( dirname -- "$0"; )
 ./$dir/train.py \
