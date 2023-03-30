@@ -97,18 +97,25 @@ def greedy_search(
     # Maximum symbols per utterance.
     max_sym_per_utt = 1000
 
+    '''
     # symbols per frame
     sym_per_frame = 0
+    '''
 
     # symbols per utterance decoded so far
     sym_per_utt = 0
 
+    # Chunk decoding states
+    states = None
+
     #while t < T and sym_per_utt < max_sym_per_utt:
     while sym_per_utt < max_sym_per_utt:
+        '''
         if sym_per_frame >= max_sym_per_frame:
             sym_per_frame = 0
             t += 1
             continue
+        '''
 
         # fmt: off
         #current_encoder_out = encoder_out[:, t:t+1, :].unsqueeze(2)
@@ -121,19 +128,25 @@ def greedy_search(
         else:
             embedding_out = model.decoder.embedding(y_in.clamp(min=0)) * (y_in >= 0).unsqueeze(-1)
 
-        current_decoder_input = torch.cat(
-            [encoder_out,  # (1, T, D)
-            embedding_out],  # (1, u, D)
-            dim=1
-        )  # (1, T+u, D)
+        if sym_per_utt == 0:
+            current_decoder_input = torch.cat(
+                [encoder_out,  # (1, T, D)
+                embedding_out],  # (1, u, D)
+                dim=1
+            )  # (1, T+u, D)
+            mask = torch.triu(torch.ones(T+u, T+u, device=device) * float('-inf'), diagonal=1)  # (T+u, T+u)
+        else:
+            current_decoder_input = embedding_out[:, -1].unsqueeze(1)  # (1, 1, D)
+            mask = None
 
         # fmt: on
-        mask = torch.triu(torch.ones(T+u, T+u, device=device) * float('-inf'), diagonal=1)  # (T+u, T+u)
-        current_decoder_out = model.decoder(
+        current_decoder_out, states = model.decoder.chunk_forward(
             current_decoder_input,
             T,
             attn_mask=mask,
-        )  # (1, T+u, V)
+            states=states,
+        )  # (1, T+u, V) or (1, 1, V)
+        
         #logits = torch.nn.functional.log_softmax(current_decoder_out[:, -1], dim=-1)  # (1, V)
         logits = current_decoder_out[:, -1]  # (1, V)
 
@@ -144,9 +157,9 @@ def greedy_search(
             timestamp.append(t)
 
             sym_per_utt += 1
-            sym_per_frame += 1
+            # sym_per_frame += 1
         else:
-            sym_per_frame = 0
+            # sym_per_frame = 0
             t += 1
             break
     #hyp = hyp[context_size:]  # remove blanks

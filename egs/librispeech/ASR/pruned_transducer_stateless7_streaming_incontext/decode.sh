@@ -1,8 +1,8 @@
 dir=$( dirname -- "$0"; )
 
 for m in greedy_search; do
-  for epoch in 15; do
-    for avg in 4; do
+  for epoch in 18; do
+    for avg in 6; do
       ./$dir/decode.py \
         --epoch $epoch \
         --avg $avg \

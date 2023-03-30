@@ -117,7 +117,6 @@ class Decoder(nn.Module):
             vocab_size,
         )
 
-
     def forward(
         self,
         input: torch.Tensor,
@@ -150,35 +149,46 @@ class Decoder(nn.Module):
         model_out = model_out.permute(1, 0, 2)  # (N, T+U, D)
         out = self.output_linear(model_out)  # (N, T+U, vocab_size)
         return out
-        '''
+    
+    def chunk_forward(
+        self,
+        input: torch.Tensor,
+        T: Optional[torch.Tensor],
+        attn_mask: Optional[torch.Tensor] = None,
+        src_key_mask: Optional[torch.Tensor] = None,
+        states: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
-          y:
-            A 2-D tensor of shape (N, U).
-          need_pad:
-            True to left pad the input. Should be True during training.
-            False to not pad the input. Should be False during inference.
+          input:
+            A 3-D tensor of shape (N, T+U, D).
+          attn_mask:
+            A 3-D tensor of shape (T+U, T+U).
+          src_key_mask:
+            A 3-D tensor of shape (N, T+U)
+          states:
+            Len==2 list of 3-D tensors of shape [(left_context, N, attention_dim), (kernel_size-1, N, conv_dim)].
         Returns:
-          Return a tensor of shape (N, U, decoder_dim).
+          Return a tensor of shape (N, T+U, vocab_size).
         """
-        y = y.to(torch.int64)
-        # this stuff about clamp() is a temporary fix for a mismatch
-        # at utterance start, we use negative ids in beam_search.py
-        if torch.jit.is_tracing():
-            # This is for exporting to PNNX via ONNX
-            embedding_out = self.embedding(y)
-        else:
-            embedding_out = self.embedding(y.clamp(min=0)) * (y >= 0).unsqueeze(-1)
-        if self.context_size > 1:
-            embedding_out = embedding_out.permute(0, 2, 1)
-            if need_pad is True:
-                embedding_out = F.pad(embedding_out, pad=(self.context_size - 1, 0))
-            else:
-                # During inference time, there is no need to do extra padding
-                # as we only need one output
-                assert embedding_out.size(-1) == self.context_size
-            embedding_out = self.conv(embedding_out)
-            embedding_out = embedding_out.permute(0, 2, 1)
-        embedding_out = F.relu(embedding_out)
-        return embedding_out
-        '''
+        #src, pos_emb = self.decoder_pos(y[:, :])  # src:(N, T+U, D), pos_emb:(N, 2(T+U)-1, D)
+        x, _ = self.decoder_pos(input[:, :T])  # x:(N, T, D)
+        y, _ = self.decoder_pos(input[:, T:])  # y:(N, U, D)
+        src = torch.cat([x, y], dim=1)  # (N, T+U, D)
+        src = src.permute(1, 0, 2)  # (T+U, N, D)
+
+        if states is None:
+            device = src.device
+            states = [[torch.zeros(0, src.size(1), 384, device=device) for _ in range(3)],\
+                      [torch.zeros(14, src.size(1), 384, device=device) for _ in range(3)]]
+        model_out, states = self.model.chunk_forward(
+            src=src,
+            pos_emb=None,
+            states=states,
+            mask=attn_mask,
+            src_key_padding_mask=src_key_mask,
+            left_context=9999,
+        )  # (T+U, N, D)
+        model_out = model_out.permute(1, 0, 2)  # (N, T+U, D)
+        out = self.output_linear(model_out)  # (N, T+U, vocab_size)
+        return out, states
