@@ -182,6 +182,14 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--short-chunk-threshold",
+        type=float,
+        default=0.75,
+        help="""Probability to choose dynamic training rather than full-length training.
+        """,
+    )
+
+    parser.add_argument(
         "--num-left-chunks",
         type=int,
         default=4,
@@ -282,6 +290,14 @@ def get_parser():
         type=float,
         default=3.5,
         help="""Number of epochs that affects how rapidly the learning rate decreases.
+        """,
+    )
+
+    parser.add_argument(
+        "--use-profiler",
+        type=str2bool,
+        default=False,
+        help="""Whether to use torch profiler to profile the training process.
         """,
     )
 
@@ -481,6 +497,7 @@ def get_encoder_model(params: AttributeDict) -> nn.Module:
         num_encoder_layers=to_int_tuple(params.num_encoder_layers),
         num_left_chunks=params.num_left_chunks,
         short_chunk_size=params.short_chunk_size,
+        short_chunk_threshold=params.short_chunk_threshold,
         decode_chunk_size=params.decode_chunk_len // 2,
     )
     return encoder
@@ -809,7 +826,10 @@ def train_one_epoch(
 
     cur_batch_idx = params.get("cur_batch_idx", 0)
 
+    #with torch.autograd.profiler.profile(use_cuda=True) as prof:
     for batch_idx, batch in enumerate(train_dl):
+        #if batch_idx == 2:
+        #    break
         if batch_idx < cur_batch_idx:
             continue
         cur_batch_idx = batch_idx
@@ -894,7 +914,7 @@ def train_one_epoch(
                     f"grad_scale is too small, exiting: {cur_grad_scale}"
                 )
 
-        if batch_idx % params.log_interval == 0:
+        if batch_idx % params.log_interval == 0:                
             cur_lr = scheduler.get_last_lr()[0]
             cur_grad_scale = scaler._scale.item() if params.use_fp16 else 1.0
 
@@ -940,6 +960,8 @@ def train_one_epoch(
                 valid_info.write_summary(
                     tb_writer, "train/valid_", params.batch_idx_train
                 )
+
+    #logging.info(prof.key_averages().table(sort_by="self_cpu_time_total"))
 
     loss_value = tot_loss["loss"] / tot_loss["frames"]
     params.train_loss = loss_value
