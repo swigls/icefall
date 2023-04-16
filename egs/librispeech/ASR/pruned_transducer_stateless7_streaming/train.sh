@@ -5,13 +5,13 @@ dir=$( dirname -- "$0"; )
   --world-size 5 \
   --num-epochs 30 \
   --start-epoch 1 \
-  --full-libri 1 \
+  --full-libri 0 \
   --use-fp16 1 \
   --enable-musan 1 \
-  --exp-dir $dir/exp-troff \
+  --exp-dir $dir/exp-100 \
   --num-left-chunks 4 \
   --short-chunk-size 50 \
-  --short-chunk-threshold 0.0 \
+  --short-chunk-threshold 0.75 \
   --max-duration 600 \
   --master-port 12345
   
