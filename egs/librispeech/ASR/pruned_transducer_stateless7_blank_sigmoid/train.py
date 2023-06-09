@@ -249,6 +249,14 @@ def get_parser():
         type=str,
         default="data/lang_bpe_500/bpe.model",
         help="Path to the BPE model",
+    )    
+    
+    parser.add_argument(
+        "--blank-sigmoid",
+        type=str2bool,
+        default=True,
+        help="""HAT-style blank probability modeling (i.e., apply sigmoid on blank token
+        and softmax for others) rather than RNN-T (i.e., apply softmax on all tokens).""",
     )
 
     parser.add_argument(
@@ -511,6 +519,7 @@ def get_transducer_model(params: AttributeDict) -> nn.Module:
         decoder_dim=params.decoder_dim,
         joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
+        blank_sigmoid=params.blank_sigmoid,
     )
     return model
 
@@ -1117,14 +1126,14 @@ def run(rank, world_size, args):
         valid_cuts += librispeech.dev_other_cuts()
     valid_dl = librispeech.valid_dataloaders(valid_cuts)
 
-    if not params.use_multidataset and not params.print_diagnostics:
-        scan_pessimistic_batches_for_oom(
-            model=model,
-            train_dl=train_dl,
-            optimizer=optimizer,
-            sp=sp,
-            params=params,
-        )
+    # if not params.use_multidataset and not params.print_diagnostics:
+    #     scan_pessimistic_batches_for_oom(
+    #         model=model,
+    #         train_dl=train_dl,
+    #         optimizer=optimizer,
+    #         sp=sp,
+    #         params=params,
+    #     )
 
     scaler = GradScaler(enabled=params.use_fp16, init_scale=1.0)
     if checkpoints and "grad_scaler" in checkpoints:

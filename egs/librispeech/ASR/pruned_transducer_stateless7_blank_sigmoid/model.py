@@ -40,6 +40,7 @@ class Transducer(nn.Module):
         decoder_dim: int,
         joiner_dim: int,
         vocab_size: int,
+        blank_sigmoid: bool = False,
     ):
         """
         Args:
@@ -70,6 +71,8 @@ class Transducer(nn.Module):
             vocab_size,
         )
         self.simple_lm_proj = nn.Linear(decoder_dim, vocab_size)
+
+        self.blank_sigmoid = blank_sigmoid
 
     def forward(
         self,
@@ -158,6 +161,8 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 return_grad=True,
+                #blank_sigmoid=self.blank_sigmoid,
+                #denom_lm_logp=None,
             )
 
         # ranges : [B, T, prune_range]
@@ -190,6 +195,8 @@ class Transducer(nn.Module):
                 termination_symbol=blank_id,
                 boundary=boundary,
                 reduction="sum",
+                blank_sigmoid=self.blank_sigmoid,
+                denom_lm_logp=None,
             )
 
         return (simple_loss, pruned_loss)

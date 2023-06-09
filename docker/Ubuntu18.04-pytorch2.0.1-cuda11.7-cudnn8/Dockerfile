@@ -56,25 +56,39 @@ RUN wget -P /opt https://downloads.xiph.org/releases/flac/flac-1.3.2.tar.xz  && 
 RUN pip install graphviz
 
 
-#install k2 from source
-RUN git clone https://github.com/k2-fsa/k2.git /opt/k2 && \
-    cd /opt/k2 && \
-    python3 setup.py install && \
-    cd -
-#    export K2_MAKE_ARGS="-j6" && \
-#
+RUN pip install kaldifeat
+RUN pip install gin-config
 
 # install  lhotse
 RUN cd /opt
 RUN pip install git+https://github.com/lhotse-speech/lhotse
 
+#install k2 from source
+#RUN git clone https://github.com/k2-fsa/k2.git /opt/k2 && \
+RUN git clone https://github.com/swigls/k2.git /opt/k2 && \
+    cd /opt/k2 && \
+    export K2_MAKE_ARGS="-j6" && \
+    mkdir build_debug && \
+    cd build_debug && \
+    cmake -DCMAKE_BUILD_TYPE=Debug .. && \
+    make -j
+RUN chmod -R 777 /opt/k2
+
+# install icefall
 RUN git clone https://github.com/k2-fsa/icefall /opt/icefall && \
 	cd /opt/icefall && \
 	pip install -r requirements.txt
 
-RUN pip install kaldifeat
 ENV PYTHONPATH /opt/icefall:$PYTHONPATH
 
-RUN pip install gin-config
+ENTRYPOINT cd /opt/k2; \
+    git checkout -- .; \
+    git pull; \
+    git checkout torch2; \
+    cd -; \
+    export PYTHONPATH=/opt/k2/k2/python:$PYTHONPATH; \
+    export PYTHONPATH=/opt/k2/build_debug/lib:$PYTHONPATH; \
+    /opt/nvidia/nvidia_entrypoint.sh
+    
 
 # WORKDIR /workspace/icefall

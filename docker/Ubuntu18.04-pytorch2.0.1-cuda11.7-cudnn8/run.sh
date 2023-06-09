@@ -1,5 +1,4 @@
 docker run \
-  --runtime=nvidia \
   --shm-size=2gb \
   --name=icefall \
   --gpus all \
@@ -11,4 +10,6 @@ docker run \
   --ipc=host \
   -w $PWD \
   icefall/pytorch2.0.1
+  #/bin/bash
 #  --expose 6006 \
+# --runtime=nvidia \
