@@ -1,6 +1,7 @@
+name=icefall_$1
 docker run \
   --shm-size=2gb \
-  --name=icefall \
+  --name=$name \
   --gpus all \
   --rm \
   -it \
