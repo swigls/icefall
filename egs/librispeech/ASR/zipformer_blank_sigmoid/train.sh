@@ -8,7 +8,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --use-fp16 1 \
   --causal 0 \
   --blank-sigmoid 1 \
-  --exp-dir $dir/exp-small \
+  --priorless-training 1 \
+  --exp-dir $dir/exp-small-plt \
   --num-encoder-layers 2,2,2,2,2,2 \
   --feedforward-dim 512,768,768,768,768,768 \
   --encoder-dim 192,256,256,256,256,256 \

@@ -2621,6 +2621,7 @@ def modified_beam_search_lm_shallow_fusion(
     LM: LmScorer,
     beam: int = 4,
     return_timestamps: bool = False,
+    blank_sigmoid: bool = False,
 ) -> List[List[int]]:
     """Modified_beam_search + NN LM shallow fusion
 
@@ -2734,7 +2735,16 @@ def modified_beam_search_lm_shallow_fusion(
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
-        log_probs = logits.log_softmax(dim=-1)  # (num_hyps, vocab_size)
+        temperature = 1.0
+        if blank_sigmoid:
+            probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
+            log_probs_blank = probs_blank.log()  # (num_hyps, 1)
+            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
+            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            log_probs_v.add_(log_probs_nonblank)
+            log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
+        else:
+            log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
 
         log_probs.add_(ys_log_probs)
 

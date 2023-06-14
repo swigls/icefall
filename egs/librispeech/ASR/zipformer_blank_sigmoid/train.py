@@ -164,6 +164,15 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--priorless-training",
+        type=str2bool,
+        default=False,
+        help="""Only meaningful when blank-sigmoid=True. If True, the output nodes of 
+        joiner are not normalized by softmax, but by a priorless normalization, which
+        accounts the probability of internal language model (i.e., simple LM).""",
+    )
+
+    parser.add_argument(
         "--query-head-dim",
         type=str,
         default="32",
