@@ -158,7 +158,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--blank-sigmoid",
         type=str2bool,
-        default=True,
+        default=False,
         help="""HAT-style blank probability modeling (i.e., apply sigmoid on blank token
         and softmax for others) rather than RNN-T (i.e., apply softmax on all tokens).""",
     )

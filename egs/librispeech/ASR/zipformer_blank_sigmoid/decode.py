@@ -171,14 +171,6 @@ def get_parser():
     )
     
     parser.add_argument(
-        "--blank-sigmoid",
-        type=str2bool,
-        default=True,
-        help="""HAT-style blank probability modeling (i.e., apply sigmoid on blank token
-        and softmax for others) rather than RNN-T (i.e., apply softmax on all tokens).""",
-    )
-
-    parser.add_argument(
         "--use-averaged-model",
         type=str2bool,
         default=True,
@@ -458,6 +450,7 @@ def decode_one_batch(
             encoder_out=encoder_out,
             encoder_out_lens=encoder_out_lens,
             beam=params.beam_size,
+            blank_sigmoid=params.blank_sigmoid,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())

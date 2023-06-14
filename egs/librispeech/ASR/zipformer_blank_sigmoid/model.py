@@ -183,6 +183,7 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 return_grad=True,
+                blank_sigmoid=self.blank_sigmoid,
             )
 
         # ranges : [B, T, prune_range]

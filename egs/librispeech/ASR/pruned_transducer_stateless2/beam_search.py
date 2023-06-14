@@ -924,6 +924,7 @@ def modified_beam_search(
     beam: int = 4,
     temperature: float = 1.0,
     return_timestamps: bool = False,
+    blank_sigmoid: bool = False,
 ) -> Union[List[List[int]], DecodingResults]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
 
@@ -941,6 +942,8 @@ def modified_beam_search(
         Softmax temperature.
       return_timestamps:
         Whether to return timestamps.
+      blank_sigmoid:
+        If True, apply sigmoid to the blank symbol rather than softmax.
     Returns:
       If return_timestamps is False, return the decoded result.
       Else, return a DecodingResults object containing
@@ -1028,7 +1031,15 @@ def modified_beam_search(
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
-        log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
+        if blank_sigmoid:
+            probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
+            log_probs_blank = probs_blank.log()  # (num_hyps, 1)
+            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
+            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            log_probs_v.add_(log_probs_nonblank)
+            log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
+        else:
+            log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
 
         log_probs.add_(ys_log_probs)
 
