@@ -1,12 +1,12 @@
 dir=$( dirname -- "$0"; )
 
 #for m in greedy_search fast_beam_search modified_beam_search ; do
-#for m in modified_beam_search_lm_shallow_fusion modified_beam_search_LODR; do
-for m in modified_beam_search_lm_shallow_fusion; do
+#for m in modified_beam_search_lm_shallow_fusion; do
+for m in modified_beam_search_LODR; do
   for epoch in 40; do
     for avg in 13; do
       #for lm_scale in 0.01 0.15 0.38; do
-      for lm_scale in 0.5 0.75 1.0; do
+      for lm_scale in 0.30 0.45; do
         CUDA_VISIBLE_DEVICES="5" ./$dir/decode.py \
           --epoch $epoch \
           --avg $avg \
@@ -29,9 +29,9 @@ for m in modified_beam_search_lm_shallow_fusion; do
           --rnn-lm-embedding-dim 2048 \
           --rnn-lm-hidden-dim 2048 \
           --rnn-lm-num-layers 3 \
-          --rnn-lm-tie-weights 1
-          #--tokens-ngram 2 \
-          #--ngram-lm-scale -0.16
+          --rnn-lm-tie-weights 1 \
+          --tokens-ngram 2 \
+          --ngram-lm-scale -0.16
       done
     done
   done

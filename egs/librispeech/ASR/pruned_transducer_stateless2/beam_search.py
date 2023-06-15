@@ -1338,6 +1338,7 @@ def modified_beam_search_lm_rescore_LODR(
     beam: int = 4,
     temperature: float = 1.0,
     return_timestamps: bool = False,
+    blank_sigmoid: bool = False,
 ) -> Union[List[List[int]], DecodingResults]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
     Rescore the final results with RNNLM and return the one with the highest score
@@ -1443,7 +1444,15 @@ def modified_beam_search_lm_rescore_LODR(
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
-        log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
+        if blank_sigmoid:
+            probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
+            log_probs_blank = probs_blank.log()  # (num_hyps, 1)
+            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
+            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            log_probs_v.add_(log_probs_nonblank)
+            log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
+        else:
+            log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
 
         log_probs.add_(ys_log_probs)
 
@@ -2351,6 +2360,7 @@ def modified_beam_search_LODR(
     LODR_lm_scale: float,
     LM: LmScorer,
     beam: int = 4,
+    blank_sigmoid: bool = False,
 ) -> List[List[int]]:
     """This function implements LODR (https://arxiv.org/abs/2203.16776) with
     `modified_beam_search`. It uses a bi-gram language model as the estimate
@@ -2469,7 +2479,16 @@ def modified_beam_search_LODR(
 
         logits = logits.squeeze(1).squeeze(1)  # (num_hyps, vocab_size)
 
-        log_probs = logits.log_softmax(dim=-1)  # (num_hyps, vocab_size)
+        temperature = 1.0
+        if blank_sigmoid:
+            probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
+            log_probs_blank = probs_blank.log()  # (num_hyps, 1)
+            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
+            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            log_probs_v.add_(log_probs_nonblank)
+            log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
+        else:
+            log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
 
         log_probs.add_(ys_log_probs)
 
