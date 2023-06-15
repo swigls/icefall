@@ -611,6 +611,7 @@ def get_transducer_model(params: AttributeDict) -> nn.Module:
         joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
         blank_sigmoid=params.blank_sigmoid,
+        priorless_training=params.priorless_training,
     )
     return model
 

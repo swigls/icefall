@@ -40,6 +40,7 @@ class Transducer(nn.Module):
         joiner_dim: int,
         vocab_size: int,
         blank_sigmoid: bool = False,
+        priorless_training: bool = False,
     ):
         """
         Args:
@@ -82,6 +83,7 @@ class Transducer(nn.Module):
         )
 
         self.blank_sigmoid = blank_sigmoid
+        self.priorless_training = priorless_training
 
     def forward(
         self,
@@ -164,7 +166,7 @@ class Transducer(nn.Module):
         boundary[:, 2] = y_lens
         boundary[:, 3] = x_lens
 
-        lm = self.simple_lm_proj(decoder_out)
+        lm = self.simple_lm_proj(decoder_out)  # [B, S + 1, vocab_size]
         am = self.simple_am_proj(encoder_out)
 
         # if self.training and random.random() < 0.25:
@@ -208,6 +210,19 @@ class Transducer(nn.Module):
         # prior to do_rnnt_pruning (this is an optimization for speed).
         logits = self.joiner(am_pruned, lm_pruned, project_input=False)
 
+        if self.priorless_training:
+            _, ilm_pruned = k2.do_rnnt_pruning(
+                am=am,  # [B, T, vocab_size]
+                lm=lm,  # [B, S + 1, vocab_size]
+                ranges=ranges,  # [B, T, prune_range]
+            )  # ilm_pruned: [B, T, prune_range, vocab_size]
+            ilm_logp = torch.nn.functional.log_softmax(
+                ilm_pruned[:, :, :, 1:].float(),
+                dim=-1
+            )  # [B, T, pruned_range, vocab_size-1]
+        else:
+            ilm_logp = None
+       
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss_pruned(
                 logits=logits.float(),
@@ -217,6 +232,7 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 blank_sigmoid=self.blank_sigmoid,
+                denom_lm_logp=ilm_logp,
             )
 
         return (simple_loss, pruned_loss)
