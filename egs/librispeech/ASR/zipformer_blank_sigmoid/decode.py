@@ -823,8 +823,7 @@ def main():
 
     if params.priorless_training:
         params.suffix += "-plt"
-        if params.ilm_scale != 0.0:
-            params.suffix += f"-ilm-scale-{params.ilm_scale}"
+        params.suffix += f"-ilm-scale-{params.ilm_scale}"
 
     if params.use_averaged_model:
         params.suffix += "-use-averaged-model"

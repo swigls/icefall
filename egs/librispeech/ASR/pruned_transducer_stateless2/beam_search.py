@@ -2791,6 +2791,8 @@ def modified_beam_search_lm_shallow_fusion(
                 log_probs_v = numerator - normalizers[:, None]  # not actually log probs, but prob ratio
                 # ILM part
                 log_probs_v.add_(ilm_logp * ilm_scale)  # (num_hyps, vocab_size-1)
+                # LM part
+                log_probs_v.add_(lm_scores[:, 1:] * (1 - ilm_scale))  # (num_hyps, vocab_size-1)
             log_probs_v.add_(log_probs_nonblank)
             log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
         else:
@@ -2893,7 +2895,10 @@ def modified_beam_search_lm_shallow_fusion(
                     ys.append(new_token)
                     new_timestamp.append(t)
 
-                    hyp_log_prob += lm_score[new_token] * lm_scale  # add the lm score
+                    if not priorless_training:
+                        hyp_log_prob += lm_score[new_token] * lm_scale  # add the lm score
+                    else:
+                        hyp_log_prob += lm_score[new_token] * (lm_scale - (1 - ilm_scale))
 
                     lm_score = scores[count]
                     if LM.lm_type == "rnn":
