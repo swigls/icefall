@@ -281,6 +281,17 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--ilm-scale",
+        type=float,
+        default=0.0,
+        help="""
+        While decoding w/ modified_beam_search or 
+        modified_beam_search_lm_shallow_fusion,
+        it specifies the scale for the internal LM scores.
+        """,
+    )
+
+    parser.add_argument(
         "--ngram-lm-scale",
         type=float,
         default=0.01,
@@ -542,6 +553,8 @@ def decode_one_batch(
             encoder_out_lens=encoder_out_lens,
             beam=params.beam_size,
             blank_sigmoid=params.blank_sigmoid,
+            priorless_training=params.priorless_training,
+            ilm_scale=params.ilm_scale,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
@@ -553,6 +566,8 @@ def decode_one_batch(
             beam=params.beam_size,
             LM=LM,
             blank_sigmoid=params.blank_sigmoid,
+            priorless_training=params.priorless_training,
+            ilm_scale=params.ilm_scale,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
@@ -805,6 +820,11 @@ def main():
             params.suffix += (
                 f"-LODR-{params.tokens_ngram}gram-scale-{params.ngram_lm_scale}"
             )
+
+    if params.priorless_training:
+        params.suffix += "-plt"
+        if params.ilm_scale != 0.0:
+            params.suffix += f"-ilm-scale-{params.ilm_scale}"
 
     if params.use_averaged_model:
         params.suffix += "-use-averaged-model"

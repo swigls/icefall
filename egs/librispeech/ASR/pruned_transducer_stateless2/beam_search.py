@@ -925,6 +925,8 @@ def modified_beam_search(
     temperature: float = 1.0,
     return_timestamps: bool = False,
     blank_sigmoid: bool = False,
+    priorless_training: bool = False,
+    ilm_scale: float = 0.0,
 ) -> Union[List[List[int]], DecodingResults]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
 
@@ -944,6 +946,8 @@ def modified_beam_search(
         Whether to return timestamps.
       blank_sigmoid:
         If True, apply sigmoid to the blank symbol rather than softmax.
+      ilm_scale:
+        Scale for the internal language model.
     Returns:
       If return_timestamps is False, return the decoded result.
       Else, return a DecodingResults object containing
@@ -1012,6 +1016,9 @@ def modified_beam_search(
         )  # (num_hyps, context_size)
 
         decoder_out = model.decoder(decoder_input, need_pad=False).unsqueeze(1)
+        if priorless_training:
+            ilm_decoder_out = model.simple_lm_proj(decoder_out)  # (N, 1, 1, V)
+            ilm_logp = ilm_decoder_out[:, 0, 0, 1:].log_softmax(dim=-1)  # (N, V-1)
         decoder_out = model.joiner.decoder_proj(decoder_out)
         # decoder_out is of shape (num_hyps, 1, 1, joiner_dim)
 
@@ -1035,7 +1042,16 @@ def modified_beam_search(
             probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
             log_probs_blank = probs_blank.log()  # (num_hyps, 1)
             log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
-            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            if not priorless_training:
+                log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            else:
+                # Ratio part
+                numerator = logits[:, 1:] / temperature  # (num_hyps, vocab_size-1)
+                denom_scores = logits[:, 1:] + ilm_logp  # (num_hyps, vocab_size-1)
+                normalizers = torch.logsumexp(denom_scores, dim=-1)  # (num_hyps,)
+                log_probs_v = numerator - normalizers[:, None]  # not actually log probs, but prob ratio
+                # ILM part
+                log_probs_v.add_(ilm_logp * ilm_scale)  # (num_hyps, vocab_size-1)
             log_probs_v.add_(log_probs_nonblank)
             log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
         else:
@@ -2641,6 +2657,8 @@ def modified_beam_search_lm_shallow_fusion(
     beam: int = 4,
     return_timestamps: bool = False,
     blank_sigmoid: bool = False,
+    priorless_training: bool = False,
+    ilm_scale: float = 1.0,
 ) -> List[List[int]]:
     """Modified_beam_search + NN LM shallow fusion
 
@@ -2658,7 +2676,8 @@ def modified_beam_search_lm_shallow_fusion(
             A neural net LM, e.g RNN or Transformer
         beam (int, optional):
             Beam size. Defaults to 4.
-
+        ilm_scale:
+            Scale for the internal language model.
     Returns:
       Return a list-of-list of token IDs. ans[i] is the decoding results
       for the i-th utterance.
@@ -2738,6 +2757,9 @@ def modified_beam_search_lm_shallow_fusion(
         )  # (num_hyps, context_size)
 
         decoder_out = model.decoder(decoder_input, need_pad=False).unsqueeze(1)
+        if priorless_training:
+            ilm_decoder_out = model.simple_lm_proj(decoder_out)  # (num_hyps, 1, 1, vocab_size)
+            ilm_logp = ilm_decoder_out[:, 0, 0, 1:].log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
         decoder_out = model.joiner.decoder_proj(decoder_out)
 
         current_encoder_out = torch.index_select(
@@ -2758,8 +2780,17 @@ def modified_beam_search_lm_shallow_fusion(
         if blank_sigmoid:
             probs_blank = logits[:, 0:1].sigmoid()  # (num_hyps, 1)
             log_probs_blank = probs_blank.log()  # (num_hyps, 1)
-            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)
-            log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            log_probs_nonblank = (1-probs_blank).log()  # (num_hyps, 1)            
+            if not priorless_training:
+                log_probs_v = (logits[:, 1:] / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size-1)
+            else:
+                # Ratio part
+                numerator = logits[:, 1:] / temperature  # (num_hyps, vocab_size-1)
+                denom_scores = logits[:, 1:] + ilm_logp  # (num_hyps, vocab_size-1)
+                normalizers = torch.logsumexp(denom_scores, dim=-1)  # (num_hyps,)
+                log_probs_v = numerator - normalizers[:, None]  # not actually log probs, but prob ratio
+                # ILM part
+                log_probs_v.add_(ilm_logp * ilm_scale)  # (num_hyps, vocab_size-1)
             log_probs_v.add_(log_probs_nonblank)
             log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
         else:

@@ -232,7 +232,7 @@ class Transducer(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 blank_sigmoid=self.blank_sigmoid,
-                denom_lm_logp=ilm_logp,
+                denom_lm_logp=ilm_logp.detach(),
             )
 
         return (simple_loss, pruned_loss)
