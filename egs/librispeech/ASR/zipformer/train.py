@@ -44,6 +44,10 @@ export CUDA_VISIBLE_DEVICES="0,1,2,3"
   --full-libri 1 \
   --max-duration 1000
 
+It supports training with:
+  - transducer loss (default), with `--use-transducer True --use-ctc False`
+  - ctc loss (not recommended), with `--use-transducer False --use-ctc True`
+  - transducer loss & ctc loss, with `--use-transducer True --use-ctc True`
 """
 
 
@@ -62,20 +66,20 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
-from zipformer import Zipformer2
-from scaling import ScheduledFloat
 from decoder import Decoder
 from joiner import Joiner
-from subsampling import Conv2dSubsampling
 from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
-from model import Transducer
+from model import AsrModel
 from optim import Eden, ScaledAdam
+from scaling import ScheduledFloat
+from subsampling import Conv2dSubsampling
 from torch import Tensor
 from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from zipformer import Zipformer2
 
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
@@ -84,40 +88,38 @@ from icefall.checkpoint import (
     save_checkpoint_with_global_batch_idx,
     update_averaged_model,
 )
-from icefall.hooks import register_inf_check_hooks
 from icefall.dist import cleanup_dist, setup_dist
 from icefall.env import get_env_info
+from icefall.hooks import register_inf_check_hooks
 from icefall.utils import (
     AttributeDict,
     MetricsTracker,
+    get_parameter_groups_with_lrs,
     setup_logger,
     str2bool,
-    get_parameter_groups_with_lrs
 )
 
-LRSchedulerType = Union[
-    torch.optim.lr_scheduler._LRScheduler, optim.LRScheduler
-]
+LRSchedulerType = Union[torch.optim.lr_scheduler._LRScheduler, optim.LRScheduler]
 
 
-def get_adjusted_batch_count(
-        params: AttributeDict) -> float:
+def get_adjusted_batch_count(params: AttributeDict) -> float:
     # returns the number of batches we would have used so far if we had used the reference
     # duration.  This is for purposes of set_batch_count().
-    return (params.batch_idx_train * (params.max_duration * params.world_size) /
-            params.ref_duration)
+    return (
+        params.batch_idx_train
+        * (params.max_duration * params.world_size)
+        / params.ref_duration
+    )
 
 
-def set_batch_count(
-        model: Union[nn.Module, DDP], batch_count: float
-) -> None:
+def set_batch_count(model: Union[nn.Module, DDP], batch_count: float) -> None:
     if isinstance(model, DDP):
         # get underlying nn.Module
         model = model.module
     for name, module in model.named_modules():
-        if hasattr(module, 'batch_count'):
+        if hasattr(module, "batch_count"):
             module.batch_count = batch_count
-        if hasattr(module, 'name'):
+        if hasattr(module, "name"):
             module.name = name
 
 
@@ -154,35 +156,35 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         "--encoder-dim",
         type=str,
         default="192,256,384,512,384,256",
-        help="Embedding dimension in encoder stacks: a single int or comma-separated list."
+        help="Embedding dimension in encoder stacks: a single int or comma-separated list.",
     )
 
     parser.add_argument(
         "--query-head-dim",
         type=str,
         default="32",
-        help="Query/key dimension per head in encoder stacks: a single int or comma-separated list."
+        help="Query/key dimension per head in encoder stacks: a single int or comma-separated list.",
     )
 
     parser.add_argument(
         "--value-head-dim",
         type=str,
         default="12",
-        help="Value dimension per head in encoder stacks: a single int or comma-separated list."
+        help="Value dimension per head in encoder stacks: a single int or comma-separated list.",
     )
 
     parser.add_argument(
         "--pos-head-dim",
         type=str,
         default="4",
-        help="Positional-encoding dimension per head in encoder stacks: a single int or comma-separated list."
+        help="Positional-encoding dimension per head in encoder stacks: a single int or comma-separated list.",
     )
 
     parser.add_argument(
         "--pos-dim",
         type=int,
         default="48",
-        help="Positional-encoding embedding dimension"
+        help="Positional-encoding embedding dimension",
     )
 
     parser.add_argument(
@@ -190,7 +192,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="192,192,256,256,256,192",
         help="Unmasked dimensions in the encoders, relates to augmentation during training.  "
-        "A single int or comma-separated list.  Must be <= each corresponding encoder_dim."
+        "A single int or comma-separated list.  Must be <= each corresponding encoder_dim.",
     )
 
     parser.add_argument(
@@ -230,7 +232,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="16,32,64,-1",
         help="Chunk sizes (at 50Hz frame rate) will be chosen randomly from this list during training. "
-        " Must be just -1 if --causal=False"
+        " Must be just -1 if --causal=False",
     )
 
     parser.add_argument(
@@ -239,7 +241,21 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         default="64,128,256,-1",
         help="Maximum left-contexts for causal training, measured in frames which will "
         "be converted to a number of chunks.  If splitting into chunks, "
-        "chunk left-context frames will be chosen randomly from this list; else not relevant."
+        "chunk left-context frames will be chosen randomly from this list; else not relevant.",
+    )
+
+    parser.add_argument(
+        "--use-transducer",
+        type=str2bool,
+        default=True,
+        help="If True, use Transducer head.",
+    )
+
+    parser.add_argument(
+        "--use-ctc",
+        type=str2bool,
+        default=False,
+        help="If True, use CTC head.",
     )
 
 
@@ -313,10 +329,7 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--base-lr",
-        type=float,
-        default=0.045,
-        help="The base learning rate."
+        "--base-lr", type=float, default=0.045, help="The base learning rate."
     )
 
     parser.add_argument(
@@ -340,15 +353,14 @@ def get_parser():
         type=float,
         default=600,
         help="Reference batch duration for purposes of adjusting batch counts for setting various "
-        "schedules inside the model"
+        "schedules inside the model",
     )
 
     parser.add_argument(
         "--context-size",
         type=int,
         default=2,
-        help="The context size in the decoder. 1 means bigram; "
-        "2 means tri-gram",
+        help="The context size in the decoder. 1 means bigram; " "2 means tri-gram",
     )
 
     parser.add_argument(
@@ -371,8 +383,7 @@ def get_parser():
         "--am-scale",
         type=float,
         default=0.0,
-        help="The scale to smooth the loss with am (output of encoder network)"
-        "part.",
+        help="The scale to smooth the loss with am (output of encoder network)" "part.",
     )
 
     parser.add_argument(
@@ -383,6 +394,13 @@ def get_parser():
         "loss(joiner is just addition), this simple loss also uses for"
         "training (as a regularization item). We will scale the simple loss"
         "with this parameter before adding to the final loss.",
+    )
+
+    parser.add_argument(
+        "--ctc-loss-scale",
+        type=float,
+        default=0.2,
+        help="Scale for CTC loss.",
     )
 
     parser.add_argument(
@@ -415,7 +433,7 @@ def get_parser():
         params.batch_idx_train % save_every_n == 0. The checkpoint filename
         has the form: f'exp-dir/checkpoint-{params.batch_idx_train}.pt'
         Note: It also saves checkpoint to `exp-dir/epoch-xxx.pt` at the
-        end of each epoch where `xxx` is the epoch number counting from 0.
+        end of each epoch where `xxx` is the epoch number counting from 1.
         """,
     )
 
@@ -522,7 +540,7 @@ def get_params() -> AttributeDict:
 
 
 def _to_int_tuple(s: str):
-    return tuple(map(int, s.split(',')))
+    return tuple(map(int, s.split(",")))
 
 
 def get_encoder_embed(params: AttributeDict) -> nn.Module:
@@ -537,7 +555,7 @@ def get_encoder_embed(params: AttributeDict) -> nn.Module:
     encoder_embed = Conv2dSubsampling(
         in_channels=params.feature_dim,
         out_channels=_to_int_tuple(params.encoder_dim)[0],
-        dropout=ScheduledFloat((0.0, 0.3), (20000.0, 0.1))
+        dropout=ScheduledFloat((0.0, 0.3), (20000.0, 0.1)),
     )
     return encoder_embed
 
@@ -585,21 +603,33 @@ def get_joiner_model(params: AttributeDict) -> nn.Module:
     return joiner
 
 
-def get_transducer_model(params: AttributeDict) -> nn.Module:
+def get_model(params: AttributeDict) -> nn.Module:
+    assert (
+        params.use_transducer or params.use_ctc
+    ), (f"At least one of them should be True, "
+        f"but got params.use_transducer={params.use_transducer}, "
+        f"params.use_ctc={params.use_ctc}")
+
     encoder_embed = get_encoder_embed(params)
     encoder = get_encoder_model(params)
-    decoder = get_decoder_model(params)
-    joiner = get_joiner_model(params)
 
-    model = Transducer(
+    if params.use_transducer:
+        decoder = get_decoder_model(params)
+        joiner = get_joiner_model(params)
+    else:
+        decoder = None
+        joiner = None
+
+    model = AsrModel(
         encoder_embed=encoder_embed,
         encoder=encoder,
         decoder=decoder,
         joiner=joiner,
-        encoder_dim=int(max(params.encoder_dim.split(','))),
+        encoder_dim=max(_to_int_tuple(params.encoder_dim)),
         decoder_dim=params.decoder_dim,
-        joiner_dim=params.joiner_dim,
         vocab_size=params.vocab_size,
+        use_transducer=params.use_transducer,
+        use_ctc=params.use_ctc,
     )
     return model
 
@@ -667,9 +697,6 @@ def load_checkpoint_if_available(
         if "cur_epoch" in saved_params:
             params["start_epoch"] = saved_params["cur_epoch"]
 
-        if "cur_batch_idx" in saved_params:
-            params["cur_batch_idx"] = saved_params["cur_batch_idx"]
-
     return saved_params
 
 
@@ -731,7 +758,7 @@ def compute_loss(
     is_training: bool,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
-    Compute CTC loss given the model and its inputs.
+    Compute loss given the model and its inputs.
 
     Args:
       params:
@@ -748,11 +775,7 @@ def compute_loss(
      warmup: a floating point value which increases throughout training;
         values >= 1.0 are fully warmed up and have all modules present.
     """
-    device = (
-        model.device
-        if isinstance(model, DDP)
-        else next(model.parameters()).device
-    )
+    device = model.device if isinstance(model, DDP) else next(model.parameters()).device
     feature = batch["inputs"]
     # at entry, feature is (N, T, C)
     assert feature.ndim == 3
@@ -766,10 +789,10 @@ def compute_loss(
 
     texts = batch["supervisions"]["text"]
     y = sp.encode(texts, out_type=int)
-    y = k2.RaggedTensor(y).to(device)
+    y = k2.RaggedTensor(y)
 
     with torch.set_grad_enabled(is_training):
-        simple_loss, pruned_loss = model(
+        simple_loss, pruned_loss, ctc_loss = model(
             x=feature,
             x_lens=feature_lens,
             y=y,
@@ -778,36 +801,42 @@ def compute_loss(
             lm_scale=params.lm_scale,
         )
 
-        s = params.simple_loss_scale
-        # take down the scale on the simple loss from 1.0 at the start
-        # to params.simple_loss scale by warm_step.
-        simple_loss_scale = (
-            s if batch_idx_train >= warm_step
-            else 1.0 - (batch_idx_train / warm_step) * (1.0 - s)
-        )
-        pruned_loss_scale = (
-            1.0 if batch_idx_train >= warm_step
-            else 0.1 + 0.9 * (batch_idx_train / warm_step)
-        )
+        loss = 0.0
 
-        loss = (
-            simple_loss_scale * simple_loss +
-            pruned_loss_scale * pruned_loss
-        )
+        if params.use_transducer:
+            s = params.simple_loss_scale
+            # take down the scale on the simple loss from 1.0 at the start
+            # to params.simple_loss scale by warm_step.
+            simple_loss_scale = (
+                s if batch_idx_train >= warm_step
+                else 1.0 - (batch_idx_train / warm_step) * (1.0 - s)
+            )
+            pruned_loss_scale = (
+                1.0 if batch_idx_train >= warm_step
+                else 0.1 + 0.9 * (batch_idx_train / warm_step)
+            )
+            loss += (
+                simple_loss_scale * simple_loss
+                + pruned_loss_scale * pruned_loss
+            )
+
+        if params.use_ctc:
+            loss += params.ctc_loss_scale * ctc_loss
 
     assert loss.requires_grad == is_training
 
     info = MetricsTracker()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        info["frames"] = (
-            (feature_lens // params.subsampling_factor).sum().item()
-        )
+        info["frames"] = (feature_lens // params.subsampling_factor).sum().item()
 
     # Note: We use reduction=sum while computing the loss.
     info["loss"] = loss.detach().cpu().item()
-    info["simple_loss"] = simple_loss.detach().cpu().item()
-    info["pruned_loss"] = pruned_loss.detach().cpu().item()
+    if params.use_transducer:
+        info["simple_loss"] = simple_loss.detach().cpu().item()
+        info["pruned_loss"] = pruned_loss.detach().cpu().item()
+    if params.use_ctc:
+        info["ctc_loss"] = ctc_loss.detach().cpu().item()
 
     return loss, info
 
@@ -895,27 +924,24 @@ def train_one_epoch(
 
     tot_loss = MetricsTracker()
 
-    cur_batch_idx = params.get("cur_batch_idx", 0)
-
     saved_bad_model = False
 
     def save_bad_model(suffix: str = ""):
-        save_checkpoint_impl(filename=params.exp_dir / f"bad-model{suffix}-{rank}.pt",
-                             model=model,
-                             model_avg=model_avg,
-                             params=params,
-                             optimizer=optimizer,
-                             scheduler=scheduler,
-                             sampler=train_dl.sampler,
-                             scaler=scaler,
-                             rank=0)
+        save_checkpoint_impl(
+            filename=params.exp_dir / f"bad-model{suffix}-{rank}.pt",
+            model=model,
+            model_avg=model_avg,
+            params=params,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            sampler=train_dl.sampler,
+            scaler=scaler,
+            rank=0,
+        )
 
     for batch_idx, batch in enumerate(train_dl):
         if batch_idx % 10 == 0:
             set_batch_count(model, get_adjusted_batch_count(params))
-        if batch_idx < cur_batch_idx:
-            continue
-        cur_batch_idx = batch_idx
 
         params.batch_idx_train += 1
         batch_size = len(batch["supervisions"]["text"])
@@ -963,7 +989,6 @@ def train_one_epoch(
             params.batch_idx_train > 0
             and params.batch_idx_train % params.save_every_n == 0
         ):
-            params.cur_batch_idx = batch_idx
             save_checkpoint_with_global_batch_idx(
                 out_dir=params.exp_dir,
                 global_batch_idx=params.batch_idx_train,
@@ -976,7 +1001,6 @@ def train_one_epoch(
                 scaler=scaler,
                 rank=rank,
             )
-            del params.cur_batch_idx
             remove_checkpoints(
                 out_dir=params.exp_dir,
                 topk=params.keep_last_k,
@@ -998,7 +1022,9 @@ def train_one_epoch(
                 logging.warning(f"Grad scale is small: {cur_grad_scale}")
             if cur_grad_scale < 1.0e-05:
                 save_bad_model()
-                raise RuntimeError(f"grad_scale is too small, exiting: {cur_grad_scale}")
+                raise RuntimeError(
+                    f"grad_scale is too small, exiting: {cur_grad_scale}"
+                )
 
         if batch_idx % params.log_interval == 0:
             cur_lr = max(scheduler.get_last_lr())
@@ -1008,8 +1034,8 @@ def train_one_epoch(
                 f"Epoch {params.cur_epoch}, "
                 f"batch {batch_idx}, loss[{loss_info}], "
                 f"tot_loss[{tot_loss}], batch size: {batch_size}, "
-                f"lr: {cur_lr:.2e}, " +
-                (f"grad_scale: {scaler._scale.item()}" if params.use_fp16 else "")
+                f"lr: {cur_lr:.2e}, "
+                + (f"grad_scale: {scaler._scale.item()}" if params.use_fp16 else "")
             )
 
             if tb_writer is not None:
@@ -1020,9 +1046,7 @@ def train_one_epoch(
                 loss_info.write_summary(
                     tb_writer, "train/current_", params.batch_idx_train
                 )
-                tot_loss.write_summary(
-                    tb_writer, "train/tot_", params.batch_idx_train
-                )
+                tot_loss.write_summary(tb_writer, "train/tot_", params.batch_idx_train)
                 if params.use_fp16:
                     tb_writer.add_scalar(
                         "train/grad_scale", cur_grad_scale, params.batch_idx_train
@@ -1039,7 +1063,9 @@ def train_one_epoch(
             )
             model.train()
             logging.info(f"Epoch {params.cur_epoch}, validation: {valid_info}")
-            logging.info(f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB")
+            logging.info(
+                f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB"
+            )
             if tb_writer is not None:
                 valid_info.write_summary(
                     tb_writer, "train/valid_", params.batch_idx_train
@@ -1091,10 +1117,13 @@ def run(rank, world_size, args):
     params.blank_id = sp.piece_to_id("<blk>")
     params.vocab_size = sp.get_piece_size()
 
+    if not params.use_transducer:
+        params.ctc_loss_scale = 1.0
+
     logging.info(params)
 
     logging.info("About to create model")
-    model = get_transducer_model(params)
+    model = get_model(params)
 
     num_param = sum([p.numel() for p in model.parameters()])
     logging.info(f"Number of model parameters: {num_param}")
@@ -1113,13 +1142,11 @@ def run(rank, world_size, args):
     model.to(device)
     if world_size > 1:
         logging.info("Using DDP")
-        model = DDP(model, device_ids=[rank],
-                    find_unused_parameters=True)
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     optimizer = ScaledAdam(
-        get_parameter_groups_with_lrs(
-            model, lr=params.base_lr, include_names=True),
-        lr=params.base_lr,   # should have no effect
+        get_parameter_groups_with_lrs(model, lr=params.base_lr, include_names=True),
+        lr=params.base_lr,  # should have no effect
         clipping_scale=2.0,
     )
 
@@ -1139,7 +1166,7 @@ def run(rank, world_size, args):
 
     if params.print_diagnostics:
         opts = diagnostics.TensorDiagnosticOptions(
-            2 ** 22
+            2**22
         )  # allow 4 megabytes per sub-module
         diagnostic = diagnostics.attach_diagnostics(model, opts)
 
@@ -1163,9 +1190,9 @@ def run(rank, world_size, args):
         # an utterance duration distribution for your dataset to select
         # the threshold
         if c.duration < 1.0 or c.duration > 20.0:
-            logging.warning(
-                f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
-            )
+            # logging.warning(
+            #     f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
+            # )
             return False
 
         # In pruned RNN-T, we require that T >= S
@@ -1216,8 +1243,7 @@ def run(rank, world_size, args):
             params=params,
         )
 
-    scaler = GradScaler(enabled=params.use_fp16,
-                        init_scale=1.0)
+    scaler = GradScaler(enabled=params.use_fp16, init_scale=1.0)
     if checkpoints and "grad_scaler" in checkpoints:
         logging.info("Loading grad scaler state dict")
         scaler.load_state_dict(checkpoints["grad_scaler"])
@@ -1338,7 +1364,9 @@ def scan_pessimistic_batches_for_oom(
                 )
             display_and_save_batch(batch, params=params, sp=sp)
             raise
-        logging.info(f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB")
+        logging.info(
+            f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB"
+        )
 
 
 def main():

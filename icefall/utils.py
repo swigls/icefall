@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from shutil import copyfile
 from typing import Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
 import k2
@@ -1551,7 +1552,7 @@ def is_module_available(*modules: str) -> bool:
 
 def filter_uneven_sized_batch(batch: dict, allowed_max_frames: int):
     """For the uneven-sized batch, the total duration after padding would possibly
-    cause OOM. Hence, for each batch, which is sorted descendingly by length,
+    cause OOM. Hence, for each batch, which is sorted in descending order by length,
     we simply drop the last few shortest samples, so that the retained total frames
     (after padding) would not exceed the given allow_max_frames.
 
@@ -1567,20 +1568,20 @@ def filter_uneven_sized_batch(batch: dict, allowed_max_frames: int):
 
     N, T, _ = features.size()
     assert T == supervisions["num_frames"].max(), (T, supervisions["num_frames"].max())
-    keep_num_utt = allowed_max_frames // T
+    kept_num_utt = allowed_max_frames // T
 
-    if keep_num_utt >= N:
+    if kept_num_utt >= N or kept_num_utt == 0:
         return batch
 
     # Note: we assume the samples in batch is sorted descendingly by length
     logging.info(
         f"Filtering uneven-sized batch, original batch size is {N}, "
-        f"retained batch size is {keep_num_utt}."
+        f"retained batch size is {kept_num_utt}."
     )
-    batch["inputs"] = features[:keep_num_utt]
+    batch["inputs"] = features[:kept_num_utt]
     for k, v in supervisions.items():
         assert len(v) == N, (len(v), N)
-        batch["supervisions"][k] = v[:keep_num_utt]
+        batch["supervisions"][k] = v[:kept_num_utt]
 
     return batch
 
@@ -1881,3 +1882,20 @@ def is_cjk(character):
             ]
         ]
     )
+
+
+def symlink_or_copy(exp_dir: Path, src: str, dst: str):
+    """
+    In the experiment directory, create a symlink pointing to src named dst.
+    If symlink creation fails (Windows?), fall back to copyfile."""
+
+    dir_fd = os.open(exp_dir, os.O_RDONLY)
+    try:
+        os.remove(dst, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    try:
+        os.symlink(src=src, dst=dst, dir_fd=dir_fd)
+    except OSError:
+        copyfile(src=exp_dir / src, dst=exp_dir / dst)
+    os.close(dir_fd)
