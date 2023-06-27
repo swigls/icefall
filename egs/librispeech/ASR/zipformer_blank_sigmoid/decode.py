@@ -379,6 +379,28 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--ilm-free-decoding",
+        type=str2bool,
+        default=False,
+        help="""The scale of the internal LM to be subtracted from
+        shallow fusion external LM.
+        Used only when `--use-shallow-fusion` and `priorless-training'
+        are set to True.
+        If True, ilm-scale and lm-scale are ignored.
+        """,
+    )
+
+    parser.add_argument(
+        "--sub-ilm-scale",
+        type=float,
+        default=False,
+        help="""During shallow fusion, the external LM replaces
+        the internal LM. 
+        Used only when `--use-shallow-fusion` is set to True.
+        """,
+    )
+
+    parser.add_argument(
         "--tokens-ngram",
         type=int,
         default=3,
@@ -568,6 +590,8 @@ def decode_one_batch(
             blank_sigmoid=params.blank_sigmoid,
             priorless_training=params.priorless_training,
             ilm_scale=params.ilm_scale,
+            ilm_free_decoding=params.ilm_free_decoding,
+            sub_ilm_scale=params.sub_ilm_scale,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
@@ -821,9 +845,12 @@ def main():
                 f"-LODR-{params.tokens_ngram}gram-scale-{params.ngram_lm_scale}"
             )
 
-    if params.priorless_training:
-        params.suffix += "-plt"
-        params.suffix += f"-ilm-scale-{params.ilm_scale}"
+        if params.priorless_training:
+            params.suffix += "-plt"
+            if params.ilm_free_decoding:
+                params.suffix += f"-ilm-free"
+            else:
+                params.suffix += f"-ilm-scale-{params.ilm_scale}"
 
     if params.use_averaged_model:
         params.suffix += "-use-averaged-model"

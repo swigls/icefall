@@ -2659,6 +2659,8 @@ def modified_beam_search_lm_shallow_fusion(
     blank_sigmoid: bool = False,
     priorless_training: bool = False,
     ilm_scale: float = 1.0,
+    ilm_free_decoding: bool = False,
+    sub_ilm_scale: float = 0.0,
 ) -> List[List[int]]:
     """Modified_beam_search + NN LM shallow fusion
 
@@ -2678,6 +2680,13 @@ def modified_beam_search_lm_shallow_fusion(
             Beam size. Defaults to 4.
         ilm_scale:
             Scale for the internal language model.
+        ilm_free_decoding:
+            Only meaningful when priorless_training is True.
+            If True, use the external language model only inplace of
+            the internal language model in the first pass.
+        sub_ilm_scale:
+            (Not implemented) Scale for the subtraction internal
+            language model.
     Returns:
       Return a list-of-list of token IDs. ans[i] is the decoding results
       for the i-th utterance.
@@ -2786,13 +2795,21 @@ def modified_beam_search_lm_shallow_fusion(
             else:
                 # Ratio part
                 numerator = logits[:, 1:] / temperature  # (num_hyps, vocab_size-1)
-                denom_scores = logits[:, 1:] + ilm_logp  # (num_hyps, vocab_size-1)
+                if ilm_free_decoding:
+                    denom_scores = logits[:, 1:] + lm_scores[:, 1:]  # (num_hyps, vocab_size-1)
+                else:
+                    denom_scores = logits[:, 1:] + ilm_logp  # (num_hyps, vocab_size-1)
                 normalizers = torch.logsumexp(denom_scores, dim=-1)  # (num_hyps,)
                 log_probs_v = numerator - normalizers[:, None]  # not actually log probs, but prob ratio
-                # ILM part
-                log_probs_v.add_(ilm_logp * ilm_scale)  # (num_hyps, vocab_size-1)
-                # LM part
-                log_probs_v.add_(lm_scores[:, 1:] * (1 - ilm_scale))  # (num_hyps, vocab_size-1)
+                if ilm_free_decoding:
+                    # LM part
+                    log_probs_v.add_(lm_scores[:, 1:])  # (num_hyps, vocab_size-1)
+                else:
+                    # ILM part
+                    log_probs_v.add_(ilm_logp * ilm_scale)  # (num_hyps, vocab_size-1)
+                    # LM part
+                    log_probs_v.add_(lm_scores[:, 1:] * (1 - ilm_scale))  # (num_hyps, vocab_size-1)
+                #print('lm', lm_scores[0, :21], 'ilm', ilm_logp[0, :20])
             log_probs_v.add_(log_probs_nonblank)
             log_probs = torch.cat([log_probs_blank, log_probs_v], dim=-1)  # (num_hyps, vocab_size)
         else:
@@ -2898,7 +2915,10 @@ def modified_beam_search_lm_shallow_fusion(
                     if not priorless_training:
                         hyp_log_prob += lm_score[new_token] * lm_scale  # add the lm score
                     else:
-                        hyp_log_prob += lm_score[new_token] * (lm_scale - (1 - ilm_scale))
+                        if ilm_free_decoding:
+                            hyp_log_prob += lm_score[new_token] * (lm_scale - 1)
+                        else:
+                            hyp_log_prob += lm_score[new_token] * (lm_scale - (1 - ilm_scale))
 
                     lm_score = scores[count]
                     if LM.lm_type == "rnn":
