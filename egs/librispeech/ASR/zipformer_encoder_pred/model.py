@@ -34,11 +34,14 @@ class AsrModel(nn.Module):
         encoder: EncoderInterface,
         decoder: Optional[nn.Module] = None,
         joiner: Optional[nn.Module] = None,
+        encoder_pred: Optional[nn.Module] = None,
         encoder_dim: int = 384,
         decoder_dim: int = 512,
         vocab_size: int = 500,
         use_transducer: bool = True,
         use_ctc: bool = False,
+        use_encoder_pred: bool = False,
+        encoder_pred_logp_scale: float = 0.0,
     ):
         """A joint CTC & Transducer ASR model.
 
@@ -66,10 +69,15 @@ class AsrModel(nn.Module):
             Its output shape is (N, T, U, vocab_size). Note that its output contains
             unnormalized probs, i.e., not processed by log-softmax.
             It is used when use_transducer is True.
+          encoder_pred:
+            It is the encoder prediction network, which is used to predict
+            encoder features of the next chunk.
           use_transducer:
             Whether use transducer head. Default: True.
           use_ctc:
             Whether use CTC head. Default: False.
+          use_encoder_pred:
+            Whether use encoder prediction network. Default: False.
         """
         super().__init__()
 
@@ -110,6 +118,14 @@ class AsrModel(nn.Module):
                 nn.Linear(encoder_dim, vocab_size),
                 nn.LogSoftmax(dim=-1),
             )
+
+        self.use_encoder_pred = use_encoder_pred
+        if use_encoder_pred:
+            assert encoder_pred is not None
+            self.encoder_pred = encoder_pred
+            self.encoder_pred_logp_scale = encoder_pred_logp_scale
+        else:
+            assert encoder_pred is None
 
     def forward_encoder(
         self, x: torch.Tensor, x_lens: torch.Tensor
@@ -231,6 +247,10 @@ class AsrModel(nn.Module):
         # if self.training and random.random() < 0.25:
         #    am = penalize_abs_values_gt(am, 30.0, 1.0e-04)
 
+        # TODO: encoder_pred w/ simple outputs
+        # if self.use_encoder_pred:
+        #     epm = self.encoder_pred()
+
         with torch.cuda.amp.autocast(enabled=False):
             simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
                 lm=lm.float(),
@@ -266,6 +286,18 @@ class AsrModel(nn.Module):
         # prior to do_rnnt_pruning (this is an optimization for speed).
         logits = self.joiner(am_pruned, lm_pruned, project_input=False)
 
+        if self.use_encoder_pred:
+            enc_pruned, dec_pruned = k2.do_rnnt_pruning(
+              am=encoder_out,
+              lm=decoder_out,
+              ranges=ranges,
+            )
+            logp_ratio, l2_numer, l2_denom = self.encoder_pred(
+                enc_pruned, encoder_out_lens, dec_pruned,
+                project_input=True,
+            )
+            # logp_ratio: (B, T, prune_range)
+
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss_pruned(
                 logits=logits.float(),
@@ -274,9 +306,14 @@ class AsrModel(nn.Module):
                 termination_symbol=blank_id,
                 boundary=boundary,
                 reduction="sum",
+                py_add=logp_ratio * self.encoder_pred_logp_scale \
+                    if self.use_encoder_pred else None,
             )
 
-        return simple_loss, pruned_loss
+        if self.use_encoder_pred:
+            return simple_loss, pruned_loss, l2_numer, l2_denom
+        else:
+            return simple_loss, pruned_loss
 
     def forward(
         self,
@@ -328,9 +365,9 @@ class AsrModel(nn.Module):
         row_splits = y.shape.row_splits(1)
         y_lens = row_splits[1:] - row_splits[:-1]
 
-        if self.use_transducer:
+        if self.use_transducer:                
             # Compute transducer loss
-            simple_loss, pruned_loss = self.forward_transducer(
+            transducer_out = self.forward_transducer(
                 encoder_out=encoder_out,
                 encoder_out_lens=encoder_out_lens,
                 y=y.to(x.device),
@@ -339,6 +376,12 @@ class AsrModel(nn.Module):
                 am_scale=am_scale,
                 lm_scale=lm_scale,
             )
+            if self.use_encoder_pred:
+                simple_loss, pruned_loss, l2_numer, l2_denom = transducer_out
+            else:
+                simple_loss, pruned_loss = transducer_out
+                l2_numer = torch.empty(0)
+                l2_denom = torch.empty(0)
         else:
             simple_loss = torch.empty(0)
             pruned_loss = torch.empty(0)
@@ -355,4 +398,5 @@ class AsrModel(nn.Module):
         else:
             ctc_loss = torch.empty(0)
 
-        return simple_loss, pruned_loss, ctc_loss
+        return simple_loss, pruned_loss, ctc_loss, l2_numer, l2_denom
+            

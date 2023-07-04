@@ -68,6 +68,7 @@ import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
 from decoder import Decoder
 from joiner import Joiner
+from encoder_pred import EncoderPred
 from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
@@ -257,6 +258,50 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         default=False,
         help="If True, use CTC head.",
     )
+
+    parser.add_argument(
+        "--use-encoder-pred",
+        type=str2bool,
+        default=False,
+        help="If True, use encoder predictor. Used only when --use-transducer=True.",
+    )
+    
+    parser.add_argument(
+        "--encoder-pred-loss-scale",
+        type=float,
+        default=0.1,
+        help="Only used if --use-encoder-pred=True. Scale for encoder predictor L2 loss.",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-bottleneck-dim",
+        type=int,
+        default=384,
+        help="Only used if --use-encoder-pred=True. Bottleneck dimension of encoder predictor convolution.",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-kernel-size",
+        type=int,
+        default=17,
+        help="Only used if --use-encoder-pred=True. Kernel size of encoder predictor convolutions.",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-num-layers",
+        type=int,
+        default=2,
+        help="Only used if --use-encoder-pred=True. Number of encoder predictor convolution modules.",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-logp-scale",
+        type=float,
+        default=0.0,
+        help="""Only used if --use-encoder-pred=True. Scale for encoder predictor log-prob ratio
+        applied on rnnt pruned loss calculation."""
+    )
+
 
 
 def get_parser():
@@ -592,7 +637,6 @@ def get_decoder_model(params: AttributeDict) -> nn.Module:
     )
     return decoder
 
-
 def get_joiner_model(params: AttributeDict) -> nn.Module:
     joiner = Joiner(
         encoder_dim=max(_to_int_tuple(params.encoder_dim)),
@@ -601,6 +645,17 @@ def get_joiner_model(params: AttributeDict) -> nn.Module:
         vocab_size=params.vocab_size,
     )
     return joiner
+
+def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Module:
+    encoder_pred = EncoderPred(
+        encoder=encoder,
+        encoder_dim=max(_to_int_tuple(params.encoder_dim)),
+        decoder_dim=params.decoder_dim,
+        pred_bottleneck_dim=params.encoder_pred_bottleneck_dim,
+        pred_kernel_size=params.encoder_pred_kernel_size,
+        pred_num_layers=params.encoder_pred_num_layers,
+    )
+    return encoder_pred
 
 
 def get_model(params: AttributeDict) -> nn.Module:
@@ -616,6 +671,8 @@ def get_model(params: AttributeDict) -> nn.Module:
     if params.use_transducer:
         decoder = get_decoder_model(params)
         joiner = get_joiner_model(params)
+        encoder_pred = get_encoder_pred_model(params, encoder) \
+            if params.use_encoder_pred else None
     else:
         decoder = None
         joiner = None
@@ -625,11 +682,14 @@ def get_model(params: AttributeDict) -> nn.Module:
         encoder=encoder,
         decoder=decoder,
         joiner=joiner,
+        encoder_pred=encoder_pred,
         encoder_dim=max(_to_int_tuple(params.encoder_dim)),
         decoder_dim=params.decoder_dim,
         vocab_size=params.vocab_size,
         use_transducer=params.use_transducer,
         use_ctc=params.use_ctc,
+        use_encoder_pred=params.use_encoder_pred,
+        encoder_pred_logp_scale=params.encoder_pred_logp_scale,
     )
     return model
 
@@ -792,7 +852,7 @@ def compute_loss(
     y = k2.RaggedTensor(y)
 
     with torch.set_grad_enabled(is_training):
-        simple_loss, pruned_loss, ctc_loss = model(
+        simple_loss, pruned_loss, ctc_loss, l2_numer, l2_denom = model(
             x=feature,
             x_lens=feature_lens,
             y=y,
@@ -820,6 +880,10 @@ def compute_loss(
                 + pruned_loss_scale * pruned_loss
             )
 
+            if params.use_encoder_pred:
+                loss += params.encoder_pred_loss_scale \
+                    * (l2_numer + l2_denom)
+
         if params.use_ctc:
             loss += params.ctc_loss_scale * ctc_loss
 
@@ -835,6 +899,9 @@ def compute_loss(
     if params.use_transducer:
         info["simple_loss"] = simple_loss.detach().cpu().item()
         info["pruned_loss"] = pruned_loss.detach().cpu().item()
+        if params.use_encoder_pred:
+            info["l2_numer"] = l2_numer.detach().cpu().item()
+            info["l2_denom"] = l2_denom.detach().cpu().item()
     if params.use_ctc:
         info["ctc_loss"] = ctc_loss.detach().cpu().item()
 

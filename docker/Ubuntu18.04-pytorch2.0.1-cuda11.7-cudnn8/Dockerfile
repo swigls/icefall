@@ -84,7 +84,7 @@ ENV PYTHONPATH /opt/icefall:$PYTHONPATH
 ENTRYPOINT cd /opt/k2; \
     git checkout -- .; \
     git pull; \
-    git checkout torch2; \
+    git checkout encoder_pred; \
     cd -; \
     export PYTHONPATH=/opt/k2/k2/python:$PYTHONPATH; \
     export PYTHONPATH=/opt/k2/build_debug/lib:$PYTHONPATH; \

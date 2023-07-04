@@ -10,7 +10,7 @@ docker run \
   -v $HOME:$HOME \
   --ipc=host \
   -w $PWD \
-  icefall/pytorch2.0.1
+  icefall:pytorch2.0.1
   #/bin/bash
 #  --expose 6006 \
 # --runtime=nvidia \

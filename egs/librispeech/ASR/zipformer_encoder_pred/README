@@ -1,0 +1,6 @@
+### TODO list
+- encoder_pred impl.
+    - encoder_pred.py
+        - current: chunk-level prediction (next-chunk)
+        - another: frame-level prediction (next-frame)
+            => maybe better because of full causal-conv utilization!
