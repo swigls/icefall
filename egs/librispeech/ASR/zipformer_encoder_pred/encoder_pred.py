@@ -29,6 +29,7 @@ class EncoderPred(nn.Module):
         pred_bottleneck_dim: int,
         pred_kernel_size: int,
         pred_num_layers: int,
+        pred_detach: bool,
     ):
         super().__init__()
 
@@ -56,6 +57,8 @@ class EncoderPred(nn.Module):
         self.pred = nn.Sequential(*self.pred_layers)
 
         self.l2_to_logp = "Gaussian"
+
+        self.pred_detach = pred_detach
 
     def forward(
         self,
@@ -95,6 +98,10 @@ class EncoderPred(nn.Module):
 
         if project_input:
             # pruned encoder_out is duplicates of the same features on the label axis.
+            if self.pred_detach:
+                encoder_out = encoder_out.detach()
+                decoder_out = decoder_out.detach()
+
             input_denom = self.encoder_proj(encoder_out[:, :, 0:1, :])  # (N, T, 1, B)
             input_numer = input_denom + self.decoder_proj(decoder_out)  # (N, T, s_range, B)
 
@@ -125,6 +132,7 @@ class EncoderPred(nn.Module):
             # roll the target encoder features to the left by one chunk
             encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, s_range, E)
             encoder_target[:, -chunk_size:, :, :] = 0
+            encoder_target = encoder_target.detach()
 
             # calculate L2 distance for each position (t,u) in the rnnt grid
             l2_denom = torch.norm((pred_next_denom - encoder_target), p=2, dim=-1)  # (N, T, 1)

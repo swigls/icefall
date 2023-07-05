@@ -302,6 +302,14 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         applied on rnnt pruned loss calculation."""
     )
 
+    parser.add_argument(
+        "--encoder-pred-detach",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True. Whether to detach encoder predictor from
+        rnnt training"""
+    )
+
 
 
 def get_parser():
@@ -654,6 +662,7 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_bottleneck_dim=params.encoder_pred_bottleneck_dim,
         pred_kernel_size=params.encoder_pred_kernel_size,
         pred_num_layers=params.encoder_pred_num_layers,
+        pred_detach=params.encoder_pred_detach,
     )
     return encoder_pred
 

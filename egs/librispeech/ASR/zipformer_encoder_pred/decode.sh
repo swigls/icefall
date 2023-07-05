@@ -1,7 +1,7 @@
 dir=$( dirname -- "$0"; )
 
 for m in greedy_search; do
-  for epoch in 8; do
+  for epoch in 4; do
     for avg in 2; do
           CUDA_VISIBLE_DEVICES="0" ./$dir/decode.py \
             --epoch $epoch \
@@ -18,7 +18,8 @@ for m in greedy_search; do
             --encoder-pred-kernel-size 17 \
             --encoder-pred-num-layers 2 \
             --encoder-pred-logp-scale 0.0 \
-            --max-duration 1000 \
+            --encoder-pred-detach 0 \
+            --max-duration 100 \
             --decoding-method $m 
     done
   done

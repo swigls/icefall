@@ -15,6 +15,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --encoder-pred-kernel-size 17 \
   --encoder-pred-num-layers 2 \
   --encoder-pred-logp-scale 0.0 \
+  --encoder-pred-detach 0 \
   --max-duration 600 \
   --master-port 12345
   
