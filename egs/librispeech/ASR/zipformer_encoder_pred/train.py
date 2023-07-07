@@ -260,6 +260,13 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--train-in-eval-mode",
+        type=str2bool,
+        default=False,
+        help="If True, train in eval mode (no dropout, batchnorm, etc.).",
+    )
+
+    parser.add_argument(
         "--use-encoder-pred",
         type=str2bool,
         default=False,
@@ -269,7 +276,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--encoder-pred-loss-scale",
         type=float,
-        default=0.1,
+        default=0.25,
         help="Only used if --use-encoder-pred=True. Scale for encoder predictor L2 loss.",
     )
 
@@ -297,9 +304,9 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--encoder-pred-logp-scale",
         type=float,
-        default=0.0,
-        help="""Only used if --use-encoder-pred=True. Scale for encoder predictor log-prob ratio
-        applied on rnnt pruned loss calculation."""
+        default=1.0,
+        help="""Only used if --use-encoder-pred=True. Scale multiplied to the value of
+        encoder predictor log-prob ratio."""
     )
 
     parser.add_argument(
@@ -309,6 +316,33 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         help="""Only used if --use-encoder-pred=True. Whether to detach encoder predictor from
         rnnt training"""
     )
+
+    parser.add_argument(
+        "--encoder-pred-l2-to-logp",
+        type=str,
+        default="Gaussian",
+        help="""Only used if --use-encoder-pred=True. How to convert l2_denom and l2_numer to
+        log probability ratio. 
+         - Gaussian: logp = -0.5 * (l2_numer^2 - l2_denom^2)
+        """
+    )
+
+    parser.add_argument(
+        "--encoder-pred-logp-ratio-clamp",
+        type=float,
+        default=0.0,
+        help="""Only used if --use-encoder-pred=True. If > 0, clamp encoder predictor log 
+        probability into [-`encoder_pred_logp_ratio_clamp`, `encoder_pred_logp_ratio_clamp`]"""
+    )
+
+    parser.add_argument(
+        "--encoder-pred-l2-norm-loss",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True. If True, use L2-norm loss
+                instead of L2 loss (i.e., not squared)."""
+    )
+
 
 
 
@@ -663,6 +697,10 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_kernel_size=params.encoder_pred_kernel_size,
         pred_num_layers=params.encoder_pred_num_layers,
         pred_detach=params.encoder_pred_detach,
+        pred_l2_to_logp=params.encoder_pred_l2_to_logp,
+        pred_logp_scale=params.encoder_pred_logp_scale,
+        pred_logp_ratio_clamp=params.encoder_pred_logp_ratio_clamp,
+        pred_l2_norm_loss=params.encoder_pred_l2_norm_loss,
     )
     return encoder_pred
 
@@ -996,7 +1034,10 @@ def train_one_epoch(
         The rank of the node in DDP training. If no DDP is used, it should
         be set to 0.
     """
-    model.train()
+    if params.train_in_eval_mode:
+        model.eval()
+    else:
+        model.train()
 
     tot_loss = MetricsTracker()
 

@@ -16,7 +16,7 @@
 
 import torch
 import torch.nn as nn
-from scaling import ScaledLinear, ScaledConv1d, SwooshL
+from scaling import ScaledLinear, ScaledConv1d, SwooshL, BiasNorm
 from zipformer import ConvolutionModule
 
 
@@ -30,6 +30,10 @@ class EncoderPred(nn.Module):
         pred_kernel_size: int,
         pred_num_layers: int,
         pred_detach: bool,
+        pred_l2_to_logp: str,
+        pred_logp_scale: float,
+        pred_logp_ratio_clamp: float,
+        pred_l2_norm_loss: bool,
     ):
         super().__init__()
 
@@ -52,11 +56,15 @@ class EncoderPred(nn.Module):
                     kernel_size=pred_kernel_size,  # 7 in data2vec 2.0, where frame shift was 20 ms.
                     causal=True,
                 ))
+            self.pred_layers.append(BiasNorm(pred_bottleneck_dim))
             self.pred_layers.append(SwooshL())
         self.pred_layers.append(nn.Linear(pred_bottleneck_dim, encoder_dim))
         self.pred = nn.Sequential(*self.pred_layers)
 
-        self.l2_to_logp = "Gaussian"
+        self.pred_l2_norm_loss = pred_l2_norm_loss
+        self.pred_l2_to_logp = pred_l2_to_logp
+        self.pred_logp_scale = pred_logp_scale
+        self.pred_logp_ratio_clamp = pred_logp_ratio_clamp
 
         self.pred_detach = pred_detach
 
@@ -120,6 +128,7 @@ class EncoderPred(nn.Module):
             # feedforward encoder_pred on the masked input for the next chunk
             # which is computationally heavy.
             N, T, s_range, B = input_numer.shape
+            E = encoder_out.shape[-1]
             input_denom = input_denom.permute(1, 0, 2, 3).reshape(T, N, B)
             input_numer = input_numer.permute(1, 0, 2, 3).reshape(T, N*s_range, B)
 
@@ -128,44 +137,76 @@ class EncoderPred(nn.Module):
 
             pred_next_denom = pred_next_denom.reshape(T, N, 1, -1).permute(1, 0, 2, 3)
             pred_next_numer = pred_next_numer.reshape(T, N, s_range, -1).permute(1, 0, 2, 3)
+            print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
+            # print('pred_next_denom value', pred_next_denom[0,:5,0,0:5])
+            # print('pred_next_numer norm', torch.norm(pred_next_numer[0,:5,0], p=2, dim=-1))
 
             # roll the target encoder features to the left by one chunk
             encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, s_range, E)
             encoder_target[:, -chunk_size:, :, :] = 0
+            encoder_target = encoder_target / E**0.5
             encoder_target = encoder_target.detach()
+            print('encoder_target norm', torch.norm(encoder_target[0,:5,0], p=2, dim=-1))
+            # print('encoder_target value', encoder_target[0,:5,0,0:5])
+            # print('encoder_target', encoder_target[0,:10,0])
 
             # calculate L2 distance for each position (t,u) in the rnnt grid
+            # L2 distance is divided by bottleneck_dim
             l2_denom = torch.norm((pred_next_denom - encoder_target), p=2, dim=-1)  # (N, T, 1)
             l2_numer = torch.norm((pred_next_numer - encoder_target), p=2, dim=-1)  # (N, T, s_range)
 
-            # mask out except t=1:T_i-1 (T_i: length of the encoder output for i-th sample)
-            encoder_mask = (torch.arange(encoder_out.shape[1], device=encoder_out.device) \
-                .expand(encoder_out.shape[0], encoder_out.shape[1]) < encoder_out_lens.unsqueeze(1) - 1) \
-                .to(encoder_out.dtype)  # (N, T)
-            l2_denom = l2_denom * encoder_mask.unsqueeze(-1)  # (N, T, 1)
-            l2_numer = l2_numer * encoder_mask.unsqueeze(-1)  # (N, T, s_range)
+            # mask out except t=1:(T_i - C) (T_i: length of the encoder output for i-th sample)
+            # not that the last chunk_size frames are not valid prediction,
+            # because we don't have the target encoder features for them.
+            target_mask = (torch.arange(encoder_out.shape[1], device=encoder_out.device) \
+                          .expand(encoder_out.shape[0], encoder_out.shape[1]) \
+                          < encoder_out_lens.unsqueeze(1) - chunk_size) \
+                          .to(encoder_out.dtype)  # (N, T)
+            l2_denom = l2_denom * target_mask.unsqueeze(-1)  # (N, T, 1)
+            l2_numer = l2_numer * target_mask.unsqueeze(-1)  # (N, T, s_range)
+            # print('l2_denom', l2_denom[0,:10,0])
+            # print('l2_numer', l2_numer[0,:10,0])
 
             # calculate log-prob. ratio
-            if self.l2_to_logp == "Gaussian":
+            if self.pred_l2_to_logp.startswith("Gaussian"):
                 # Assumed variance of 1
                 logp_denom = -0.5 * l2_denom ** 2  # (N, T, 1)
                 logp_numer = -0.5 * l2_numer ** 2  # (N, T, s_range)
-                logp_ratio = logp_numer - logp_denom  # (N, T, s_range)
-                
-                # mask out except t % C == -1
-                # information gain occurs only at the end of every chunk (next chunk prediction)
-                chunk_mask = torch.zeros_like(encoder_mask)  # (N, T)
-                chunk_mask[:, chunk_size-1::chunk_size] = 1
-                logp_ratio = logp_ratio * chunk_mask.unsqueeze(-1)  # (N, T, s_range)
+                ratio = logp_numer - logp_denom  # (N, T, s_range)
+
+                # At chunk endpoint, the logp_ratio value equals to the
+                # sum of the logp_ratio values of the next chunk
+                # Note that except t % C == -1, the logp_ratio value is zero
+                # because information gain occurs only at the end of every chunk
+                logp_ratio = torch.zeros_like(ratio)
+                ratio = torch.nn.functional.pad(ratio, (0,0,0,-T%chunk_size))  # (N, [T], s_range)
+                ratio = ratio.reshape(N, -1, chunk_size, s_range)
+                ratio = torch.sum(ratio, dim=2)  # (N, [T//C], s_range)
+                logp_ratio[:, chunk_size-1::chunk_size, :] = ratio
             else:
                 assert False, "not implemented"
+
+            # scale and clamp the log-prob. ratio
+            logp_ratio = logp_ratio * self.pred_logp_scale
+            print('logp_ratio after scale', logp_ratio[0,chunk_size-1:chunk_size*3:chunk_size,0])
+            if self.pred_logp_ratio_clamp > 0:
+                logp_ratio = torch.clamp(logp_ratio,
+                                        min=-self.pred_logp_ratio_clamp,
+                                        max=self.pred_logp_ratio_clamp)
             
             # calculate loss functions for training encoder_prod
-            # mean over valid time frames
-            l2_denom = torch.sum(
-                torch.sum(l2_denom, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
-            l2_numer = torch.sum(
-                torch.sum(l2_numer, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
+            # DEPRECATED: mean over valid time frames
+            # NEW: mean over s_range, sum over valid time frames
+            # l2_denom = torch.sum(
+            #     torch.sum(l2_denom, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
+            # l2_numer = torch.sum(
+            #     torch.sum(l2_numer, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
+            if self.pred_l2_norm_loss:
+                l2_denom = torch.sum(torch.mean(l2_denom, dim=-1))
+                l2_numer = torch.sum(torch.mean(l2_numer, dim=-1))
+            else:
+                l2_denom = torch.sum(torch.mean(l2_denom ** 2, dim=-1))  # scalar
+                l2_numer = torch.sum(torch.mean(l2_numer ** 2, dim=-1))  # scalar
         else:
             assert False, "not implemented"
 

@@ -1,6 +1,5 @@
 ### TODO list
 - encoder_pred impl.
     - encoder_pred.py
-        - current: chunk-level prediction (next-chunk)
-        - another: frame-level prediction (next-frame)
-            => maybe better because of full causal-conv utilization!
+        - (WIP) sum up i-th chunk prediction logp_ratio to i-th chunk-end
+        - lower loss scale?
