@@ -1,9 +1,9 @@
 dir=$( dirname -- "$0"; )
 
 for m in greedy_search; do
-  for epoch in 30; do
+  for epoch in 40; do
     for avg in 8; do
-          CUDA_VISIBLE_DEVICES="1" ./$dir/decode.py \
+          CUDA_VISIBLE_DEVICES="0" ./$dir/decode.py \
             --epoch $epoch \
             --avg $avg \
             --use-averaged-model 1 \

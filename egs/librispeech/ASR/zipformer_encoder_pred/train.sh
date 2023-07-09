@@ -7,10 +7,10 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --causal 1 \
   --full-libri 1 \
   --use-fp16 1 \
-  --exp-dir $dir/exp-chunk8-dur600-eval \
+  --exp-dir $dir/exp-chunk8-dur600-eval-epred \
   --chunk-size "8" \
   --train-in-eval-mode 1 \
-  --use-encoder-pred 0 \
+  --use-encoder-pred 1 \
   --encoder-pred-detach 0 \
   --encoder-pred-bottleneck-dim 384 \
   --encoder-pred-kernel-size 17 \

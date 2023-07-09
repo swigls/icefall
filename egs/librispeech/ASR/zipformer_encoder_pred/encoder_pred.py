@@ -179,8 +179,9 @@ class EncoderPred(nn.Module):
                 # Note that except t % C == -1, the logp_ratio value is zero
                 # because information gain occurs only at the end of every chunk
                 logp_ratio = torch.zeros_like(ratio)
-                ratio = torch.nn.functional.pad(ratio, (0,0,0,-T%chunk_size))  # (N, [T], s_range)
-                ratio = ratio.reshape(N, -1, chunk_size, s_range)
+                # ratio = torch.nn.functional.pad(ratio, (0,0,0,-T%chunk_size))  # (N, [T], s_range)
+                ratio = ratio[:, T%chunk_size:]  # (N, [T], s_range)
+                ratio = ratio.reshape(N, -1, chunk_size, s_range)  # (N, [T//C], C, s_range)
                 ratio = torch.sum(ratio, dim=2)  # (N, [T//C], s_range)
                 logp_ratio[:, chunk_size-1::chunk_size, :] = ratio
             else:
