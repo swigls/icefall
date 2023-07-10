@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 from scaling import ScaledLinear, ScaledConv1d, SwooshL, BiasNorm
 from zipformer import ConvolutionModule
+from collections import OrderedDict
 
 
 class EncoderPred(nn.Module):
@@ -49,17 +50,17 @@ class EncoderPred(nn.Module):
         # self.pred_context_chunk = num_context_chunk_per_layer * pred_num_layers
 
         self.pred_layers = []
-        for _ in range(pred_num_layers):
-            self.pred_layers.append(
+        for i in range(pred_num_layers):
+            self.pred_layers.append(('ConvModule%d'%i,
                 ConvolutionModule(
                     channels=pred_bottleneck_dim,
                     kernel_size=pred_kernel_size,  # 7 in data2vec 2.0, where frame shift was 20 ms.
                     causal=True,
-                ))
-            self.pred_layers.append(BiasNorm(pred_bottleneck_dim))
-            self.pred_layers.append(SwooshL())
-        self.pred_layers.append(nn.Linear(pred_bottleneck_dim, encoder_dim))
-        self.pred = nn.Sequential(*self.pred_layers)
+                )))
+            # self.pred_layers.append(BiasNorm(pred_bottleneck_dim))
+            self.pred_layers.append(('SwooshL%d'%i, SwooshL()))
+        self.pred_layers.append(('out_linear',nn.Linear(pred_bottleneck_dim, encoder_dim)))
+        self.pred = nn.Sequential(OrderedDict(self.pred_layers))
 
         self.pred_l2_norm_loss = pred_l2_norm_loss
         self.pred_l2_to_logp = pred_l2_to_logp
@@ -137,7 +138,7 @@ class EncoderPred(nn.Module):
 
             pred_next_denom = pred_next_denom.reshape(T, N, 1, -1).permute(1, 0, 2, 3)
             pred_next_numer = pred_next_numer.reshape(T, N, s_range, -1).permute(1, 0, 2, 3)
-            print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
+            # print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
             # print('pred_next_denom value', pred_next_denom[0,:5,0,0:5])
             # print('pred_next_numer norm', torch.norm(pred_next_numer[0,:5,0], p=2, dim=-1))
 
@@ -147,6 +148,7 @@ class EncoderPred(nn.Module):
             encoder_target = encoder_target / E**0.5
             encoder_target = encoder_target.detach()
             print('encoder_target norm', torch.norm(encoder_target[0,:5,0], p=2, dim=-1))
+            print('pred_next_denom diff norm', torch.norm(pred_next_denom[0,:5,0] - encoder_target[0,:5,0], p=2, dim=-1))
             # print('encoder_target value', encoder_target[0,:5,0,0:5])
             # print('encoder_target', encoder_target[0,:10,0])
 

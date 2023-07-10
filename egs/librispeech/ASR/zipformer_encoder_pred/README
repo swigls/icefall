@@ -1,9 +1,6 @@
 ### TODO list
 - encoder_pred impl.
     - encoder_pred.py
-        - (WIP) sum up i-th chunk prediction logp_ratio to i-th chunk-end
-
-        - WER degrades train_in_eval_mode ...
-            => student/teacher mode? (2 times slower, only teacher in eval mode)
-
-        - lower loss scale?
+        - Separate optim for encoder_pred
+        - lower loss scale(0.25 -> 0.1 -> 0.03)
+        + maybe, predicting h is still too difficult. Again think of y over y?
