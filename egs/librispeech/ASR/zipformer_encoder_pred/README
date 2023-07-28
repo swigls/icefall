@@ -1,6 +1,6 @@
 ### TODO list
 - encoder_pred impl.
     - encoder_pred.py
+        - Conv review
         - Separate optim for encoder_pred
-        - lower loss scale(0.25 -> 0.1 -> 0.03)
         + maybe, predicting h is still too difficult. Again think of y over y?

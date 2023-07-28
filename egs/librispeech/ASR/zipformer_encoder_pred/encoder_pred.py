@@ -49,7 +49,9 @@ class EncoderPred(nn.Module):
         #     (half_kernel_size-1 + chunk_size-1) // chunk_size
         # self.pred_context_chunk = num_context_chunk_per_layer * pred_num_layers
 
+        assert pred_bottleneck_dim==encoder_dim, (pred_bottleneck_dim, encoder_dim)
         self.pred_layers = []
+        self.pred_layers.append(('SwooshL_proj', SwooshL()))
         for i in range(pred_num_layers):
             self.pred_layers.append(('ConvModule%d'%i,
                 ConvolutionModule(
@@ -57,9 +59,9 @@ class EncoderPred(nn.Module):
                     kernel_size=pred_kernel_size,  # 7 in data2vec 2.0, where frame shift was 20 ms.
                     causal=True,
                 )))
-            # self.pred_layers.append(BiasNorm(pred_bottleneck_dim))
-            self.pred_layers.append(('SwooshL%d'%i, SwooshL()))
-        self.pred_layers.append(('out_linear',nn.Linear(pred_bottleneck_dim, encoder_dim)))
+            # self.pred_layers.append(('BiasNorm%d'%i,BiasNorm(pred_bottleneck_dim)))
+            # self.pred_layers.append(('SwooshL%d'%i, SwooshL()))
+        # self.pred_layers.append(('out_linear',nn.Linear(pred_bottleneck_dim, encoder_dim)))
         self.pred = nn.Sequential(OrderedDict(self.pred_layers))
 
         self.pred_l2_norm_loss = pred_l2_norm_loss
@@ -146,8 +148,9 @@ class EncoderPred(nn.Module):
             encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, s_range, E)
             encoder_target[:, -chunk_size:, :, :] = 0
             encoder_target = encoder_target / E**0.5
-            encoder_target = encoder_target.detach()
+            # encoder_target = encoder_target.detach()
             print('encoder_target norm', torch.norm(encoder_target[0,:5,0], p=2, dim=-1))
+            print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
             print('pred_next_denom diff norm', torch.norm(pred_next_denom[0,:5,0] - encoder_target[0,:5,0], p=2, dim=-1))
             # print('encoder_target value', encoder_target[0,:5,0,0:5])
             # print('encoder_target', encoder_target[0,:10,0])
