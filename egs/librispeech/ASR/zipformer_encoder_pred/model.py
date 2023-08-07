@@ -42,6 +42,7 @@ class AsrModel(nn.Module):
         use_ctc: bool = False,
         use_encoder_pred: bool = False,
         encoder_pred_logp_scale: float = 0.0,
+        rnnt_type: str = "regular",
     ):
         """A joint CTC & Transducer ASR model.
 
@@ -126,6 +127,8 @@ class AsrModel(nn.Module):
             self.encoder_pred_logp_scale = encoder_pred_logp_scale
         else:
             assert encoder_pred is None
+          
+        self.rnnt_type = rnnt_type
 
     def forward_encoder(
         self, x: torch.Tensor, x_lens: torch.Tensor
@@ -261,6 +264,7 @@ class AsrModel(nn.Module):
                 am_only_scale=am_scale,
                 boundary=boundary,
                 reduction="sum",
+                rnnt_type=self.rnnt_type,
                 return_grad=True,
             )
 
@@ -306,6 +310,7 @@ class AsrModel(nn.Module):
                 termination_symbol=blank_id,
                 boundary=boundary,
                 reduction="sum",
+                rnnt_type=self.rnnt_type,
                 py_add=logp_ratio * self.encoder_pred_logp_scale \
                     if self.use_encoder_pred else None,
             )

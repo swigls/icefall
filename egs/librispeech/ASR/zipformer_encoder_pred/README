@@ -1,6 +1,7 @@
 ### TODO list
 - encoder_pred impl.
     - encoder_pred.py
+        + continue from pretrained rnn-t
+        
         - Conv review
         - Separate optim for encoder_pred
-        + maybe, predicting h is still too difficult. Again think of y over y?

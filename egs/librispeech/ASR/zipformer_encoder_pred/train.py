@@ -342,6 +342,13 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         help="""Only used if --use-encoder-pred=True. If True, use L2-norm loss
                 instead of L2 loss (i.e., not squared)."""
     )
+    
+    parser.add_argument(
+        "--rnnt-type",
+        type=str,
+        default="regular",
+        help="""One of [regular, modified, constrained]"""
+    )
 
 
 
@@ -737,6 +744,7 @@ def get_model(params: AttributeDict) -> nn.Module:
         use_ctc=params.use_ctc,
         use_encoder_pred=params.use_encoder_pred,
         encoder_pred_logp_scale=params.encoder_pred_logp_scale,
+        rnnt_type=params.rnnt_type,
     )
     return model
 
