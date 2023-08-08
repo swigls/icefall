@@ -2,12 +2,12 @@ dir=$( dirname -- "$0"; )
 
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --world-size 6 \
-  --start-epoch 1 \
-  --num-epochs 100 \
+  --start-epoch 101 \
+  --num-epochs 150 \
   --causal 1 \
   --full-libri 0 \
   --use-fp16 1 \
-  --exp-dir $dir/exp-100h-eval \
+  --exp-dir $dir/exp-100h-eval-epred-d-nl \
   --chunk-size "8" \
   --rnnt-type "regular" \
   --train-in-eval-mode 1 \

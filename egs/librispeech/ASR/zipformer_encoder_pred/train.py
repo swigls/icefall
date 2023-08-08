@@ -1279,7 +1279,10 @@ def run(rank, world_size, args):
 
     if checkpoints and "optimizer" in checkpoints:
         logging.info("Loading optimizer state dict")
-        optimizer.load_state_dict(checkpoints["optimizer"])
+        try:
+            optimizer.load_state_dict(checkpoints["optimizer"])
+        except:
+            logging.warning("Failed to load optimizer state dict due to mismatched parameters")
 
     if (
         checkpoints
@@ -1287,7 +1290,10 @@ def run(rank, world_size, args):
         and checkpoints["scheduler"] is not None
     ):
         logging.info("Loading scheduler state dict")
-        scheduler.load_state_dict(checkpoints["scheduler"])
+        try:
+            scheduler.load_state_dict(checkpoints["scheduler"])
+        except TypeError:
+            logging.warning("Failed to load scheduler state dict due to mismatched parameters")
 
     if params.print_diagnostics:
         opts = diagnostics.TensorDiagnosticOptions(
