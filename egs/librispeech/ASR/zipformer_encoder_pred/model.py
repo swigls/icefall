@@ -41,7 +41,6 @@ class AsrModel(nn.Module):
         use_transducer: bool = True,
         use_ctc: bool = False,
         use_encoder_pred: bool = False,
-        encoder_pred_logp_scale: float = 0.0,
         rnnt_type: str = "regular",
     ):
         """A joint CTC & Transducer ASR model.
@@ -124,7 +123,6 @@ class AsrModel(nn.Module):
         if use_encoder_pred:
             assert encoder_pred is not None
             self.encoder_pred = encoder_pred
-            self.encoder_pred_logp_scale = encoder_pred_logp_scale
         else:
             assert encoder_pred is None
           
@@ -311,8 +309,7 @@ class AsrModel(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 rnnt_type=self.rnnt_type,
-                py_add=logp_ratio * self.encoder_pred_logp_scale \
-                    if self.use_encoder_pred else None,
+                py_add=logp_ratio if self.use_encoder_pred else None,
             )
 
         if self.use_encoder_pred:

@@ -7,7 +7,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --causal 1 \
   --full-libri 1 \
   --use-fp16 1 \
-  --exp-dir $dir/exp-chunk8-dur600-eval-from25-pred-d-nl-from50-lps5 \
+  --exp-dir $dir/exp-chunk8-dur600-eval-from25-pred-d-nl-from50-lps1 \
   --chunk-size "8" \
   --rnnt-type "regular" \
   --train-in-eval-mode 1 \
@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --encoder-pred-l2-norm-loss 1 \
   --encoder-pred-loss-scale 0.25 \
   --encoder-pred-l2-to-logp Gaussian \
-  --encoder-pred-logp-scale 5.0 \
+  --encoder-pred-logp-scale 1.0 \
   --encoder-pred-logp-ratio-clamp 0.0 \
   --max-duration 600 \
   --master-port 12345
