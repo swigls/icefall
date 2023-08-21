@@ -309,7 +309,7 @@ class AsrModel(nn.Module):
                 boundary=boundary,
                 reduction="sum",
                 rnnt_type=self.rnnt_type,
-                py_add=logp_ratio if self.use_encoder_pred else None,
+                py_add=logp_ratio.detach() if self.use_encoder_pred else None,
             )
 
         if self.use_encoder_pred:

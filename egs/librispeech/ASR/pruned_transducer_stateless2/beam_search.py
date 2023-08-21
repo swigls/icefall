@@ -950,6 +950,8 @@ def modified_beam_search(
     temperature: float = 1.0,
     blank_penalty: float = 0.0,
     return_timestamps: bool = False,
+    encoder_pred_logp_scale: float = 0.0,
+    encoder_pred_chunk_size: int = 8,
 ) -> Union[List[List[int]], DecodingResults]:
     """Beam search in batch mode with --max-sym-per-frame=1 being hardcoded.
 
@@ -1004,6 +1006,8 @@ def modified_beam_search(
         )
 
     encoder_out = model.joiner.encoder_proj(packed_encoder_out.data)
+    if encoder_pred_logp_scale != 0:
+      encoder_out_epred = model.encoder_pred.encoder_proj(packed_encoder_out.data)
 
     offset = 0
     finalized_B = []
@@ -1013,6 +1017,17 @@ def modified_beam_search(
         current_encoder_out = encoder_out.data[start:end]
         current_encoder_out = current_encoder_out.unsqueeze(1).unsqueeze(1)
         # current_encoder_out's shape is (batch_size, 1, 1, encoder_out_dim)
+        if encoder_pred_logp_scale != 0 and (t+1) % encoder_pred_chunk_size == 0:
+          # current_encoder_out_epred = encoder_out_epred.data[start:end].unsqueeze(1).unsqueeze(1)
+          # current_encoder_out_epred's shape is (batch_size, encoder_out_dim)
+          if len(batch_size_list) > t+1:
+            next_start = end
+            next_end = end + batch_size_list[t+1] if t+1 < len(batch_size_list) else end
+            next_encoder_out_epred = encoder_out_epred.data[next_start:next_end]
+          else:
+            next_encoder_out_epred = None
+              
+          #TODO
         offset = end
 
         finalized_B = B[batch_size:] + finalized_B
@@ -1058,6 +1073,11 @@ def modified_beam_search(
             logits[:, 0] -= blank_penalty
 
         log_probs = (logits / temperature).log_softmax(dim=-1)  # (num_hyps, vocab_size)
+
+        if encoder_pred_logp_scale != 0 and (t+1) % encoder_pred_chunk_size == 0:
+          #TODO: add logp_ratio to blank transition
+          logp_ratio = None
+          log_probs[:, 0] += logp_ratio
 
         log_probs.add_(ys_log_probs)
 
@@ -1693,6 +1713,8 @@ def beam_search(
     temperature: float = 1.0,
     blank_penalty: float = 0.0,
     return_timestamps: bool = False,
+    epred_logp_scale: float = 0.0,
+    epred_chunk_size: int = 8,
 ) -> Union[List[int], DecodingResults]:
     """
     It implements Algorithm 1 in https://arxiv.org/pdf/1211.3711.pdf
@@ -1736,6 +1758,8 @@ def beam_search(
     decoder_out = model.joiner.decoder_proj(decoder_out)
 
     encoder_out = model.joiner.encoder_proj(encoder_out)
+    if epred_logp_scale != 0.0:
+      encoder_out_epred = model.encoder_pred.encoder_proj(encoder_out)  # (1, T, C)
 
     T = encoder_out.size(1)
     t = 0
@@ -1748,6 +1772,11 @@ def beam_search(
     sym_per_utt = 0
 
     decoder_cache: Dict[str, torch.Tensor] = {}
+    if epred_logp_scale != 0.0:
+        decoder_epred_cache: Dict[str, torch.Tensor] = {}
+
+    if epred_logp_scale != 0.0:
+        logp_ratio_cache: Dict[str, torch.Tensor] = {}
 
     while t < T and sym_per_utt < max_sym_per_utt:
         # fmt: off
@@ -1760,6 +1789,24 @@ def beam_search(
 
         # TODO(fangjun): Implement prefix search to update the `log_prob`
         # of hypotheses in A
+
+        # print('t', t)
+        if epred_logp_scale != 0.0 and t % epred_chunk_size == 0 and t > 0:
+            # If moved to the next chunk, we need to update logp_ratio to the
+            # beams' log probs. 
+            # print('t', t)
+            for key in A.data.keys():
+                key_t = key + f'-t-{t-1}'
+                if key_t not in logp_ratio_cache:
+                    print(f'key {key_t} not in logp_ratio_cache')
+                    print(logp_ratio_cache.keys())
+                    continue
+                logp_ratio = logp_ratio_cache[key_t]
+                print(t, key)
+                print(A.data[key].log_prob)
+                A.data[key].log_prob += epred_logp_scale * logp_ratio
+                print(A.data[key].log_prob)
+            logp_ratio_cache = {}
 
         while True:
             y_star = A.get_most_probable()
@@ -1775,10 +1822,16 @@ def beam_search(
                 ).reshape(1, context_size)
 
                 decoder_out = model.decoder(decoder_input, need_pad=False)
+                if epred_logp_scale != 0.0:
+                  decoder_out_epred = model.encoder_pred.decoder_proj(decoder_out)
+                  decoder_epred_cache[cached_key] = decoder_out_epred
                 decoder_out = model.joiner.decoder_proj(decoder_out)
                 decoder_cache[cached_key] = decoder_out
             else:
                 decoder_out = decoder_cache[cached_key]
+                if epred_logp_scale != 0.0:
+                  decoder_out_epred = decoder_epred_cache[cached_key]
+
 
             cached_key += f"-t-{t}"
             if cached_key not in joint_cache:
@@ -1800,9 +1853,29 @@ def beam_search(
             else:
                 log_prob = joint_cache[cached_key]
 
+            if epred_logp_scale != 0.0 and (t+1) % epred_chunk_size == 0:
+                if cached_key not in logp_ratio_cache:
+                  # target (next chunk) length maybe smaller than epred_chunk_size
+                  # TODO: not to execute the same encoder_pred.pred multiple times
+                  logp_ratio = model.encoder_pred.chunk_logp_ratio(
+                      encoder_out_epred[:, t-epred_chunk_size+1:t+1, :],
+                      encoder_out_epred[:, t+1:t+1+epred_chunk_size, :],
+                      decoder_out_epred,
+                      
+                  )
+                  logp_ratio_cache[cached_key] = logp_ratio
+                else:
+                  logp_ratio = logp_ratio_cache[cached_key]
+                
+
             # First, process the blank symbol
             skip_log_prob = log_prob[blank_id]
+            # print('epred_logp_scale', epred_logp_scale, 't', t)
+            # if epred_logp_scale != 0.0 and (t+1) % epred_chunk_size == 0:
+            #   skip_log_prob += epred_logp_scale * logp_ratio
+            #   # print('t', t, 'epred_logp_scale', epred_logp_scale, 'logp_ratio', logp_ratio)
             new_y_star_log_prob = y_star.log_prob + skip_log_prob
+
 
             # ys[:] returns a copy of ys
             B.add(

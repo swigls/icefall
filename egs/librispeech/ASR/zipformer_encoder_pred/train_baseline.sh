@@ -2,15 +2,15 @@ dir=$( dirname -- "$0"; )
 
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --world-size 6 \
-  --start-epoch 1 \
-  --num-epochs 25 \
+  --start-epoch 41 \
+  --num-epochs 100 \
   --causal 1 \
   --full-libri 1 \
   --use-fp16 1 \
-  --exp-dir $dir/exp-chunk8-dur600-eval \
+  --exp-dir $dir/exp-chunk8-dur600 \
   --chunk-size "8" \
   --rnnt-type "regular" \
-  --train-in-eval-mode 1 \
+  --train-in-eval-mode 0 \
   --use-encoder-pred 0 \
   --encoder-pred-detach 1 \
   --encoder-pred-bottleneck-dim 512 \

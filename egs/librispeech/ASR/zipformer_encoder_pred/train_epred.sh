@@ -3,11 +3,11 @@ dir=$( dirname -- "$0"; )
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --world-size 6 \
   --start-epoch 26 \
-  --num-epochs 50 \
+  --num-epochs 70 \
   --causal 1 \
   --full-libri 1 \
   --use-fp16 1 \
-  --exp-dir $dir/exp-chunk8-dur600-eval-from25-pred-d-nl \
+  --exp-dir $dir/exp-chunk8-dur600-eval-from25-pred-d-nl-lyr4 \
   --chunk-size "8" \
   --rnnt-type "regular" \
   --train-in-eval-mode 1 \
@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5" ./$dir/train.py \
   --encoder-pred-detach 1 \
   --encoder-pred-bottleneck-dim 512 \
   --encoder-pred-kernel-size 17 \
-  --encoder-pred-num-layers 2 \
+  --encoder-pred-num-layers 4 \
   --encoder-pred-l2-norm-loss 1 \
   --encoder-pred-loss-scale 0.25 \
   --encoder-pred-l2-to-logp Gaussian \

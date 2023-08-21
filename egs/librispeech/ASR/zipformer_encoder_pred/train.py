@@ -311,10 +311,12 @@ def add_model_arguments(parser: argparse.ArgumentParser):
 
     parser.add_argument(
         "--encoder-pred-detach",
-        type=str2bool,
-        default=False,
+        type=int,
+        default=0,
         help="""Only used if --use-encoder-pred=True. Whether to detach encoder predictor from
-        rnnt training"""
+        rnnt training. If 0, detach only encoder_target; if 1, perfectly detach encoder and decoder
+        outputs from encoder_pred model training; if 2, absolutely no detach used in encoder_pred.      
+        """
     )
 
     parser.add_argument(
@@ -522,7 +524,7 @@ def get_parser():
         "--save-every-n",
         type=int,
         default=4000,
-        help="""Save checkpoint after processing this number of batches"
+        help="""Save checkpoint after processing this number of batches
         periodically. We save checkpoint to exp-dir/ whenever
         params.batch_idx_train % save_every_n == 0. The checkpoint filename
         has the form: f'exp-dir/checkpoint-{params.batch_idx_train}.pt'
@@ -743,7 +745,6 @@ def get_model(params: AttributeDict) -> nn.Module:
         use_transducer=params.use_transducer,
         use_ctc=params.use_ctc,
         use_encoder_pred=params.use_encoder_pred,
-        encoder_pred_logp_scale=params.encoder_pred_logp_scale,
         rnnt_type=params.rnnt_type,
     )
     return model

@@ -1,7 +1,0 @@
-### TODO list
-- encoder_pred impl.
-    - encoder_pred.py
-        + continue from pretrained rnn-t
-        
-        - Conv review
-        - Separate optim for encoder_pred

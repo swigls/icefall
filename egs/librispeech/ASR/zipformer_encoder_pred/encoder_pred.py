@@ -30,7 +30,7 @@ class EncoderPred(nn.Module):
         pred_bottleneck_dim: int,
         pred_kernel_size: int,
         pred_num_layers: int,
-        pred_detach: bool,
+        pred_detach: int,
         pred_l2_to_logp: str,
         pred_logp_scale: float,
         pred_logp_ratio_clamp: float,
@@ -42,12 +42,13 @@ class EncoderPred(nn.Module):
         
         self.encoder_proj = ScaledLinear(encoder_dim, pred_bottleneck_dim, initial_scale=0.25)
         self.decoder_proj = ScaledLinear(decoder_dim, pred_bottleneck_dim, initial_scale=0.25)
-        # assert len(encoder.chunk_size) == 1, encoder.chunk_size
-        # chunk_size = encoder.chunk_size[0]
-        # half_kernel_size = (pred_kernel_size + 1) // 2
-        # num_context_chunk_per_layer = \
-        #     (half_kernel_size-1 + chunk_size-1) // chunk_size
-        # self.pred_context_chunk = num_context_chunk_per_layer * pred_num_layers
+    
+        assert len(encoder.chunk_size) == 1, encoder.chunk_size
+        chunk_size = encoder.chunk_size[0]
+        half_kernel_size = (pred_kernel_size + 1) // 2
+        num_context_chunk_per_layer = \
+            (half_kernel_size-1 + chunk_size-1) // chunk_size
+        self.pred_context_chunk = num_context_chunk_per_layer * pred_num_layers
 
         assert pred_bottleneck_dim==encoder_dim, (pred_bottleneck_dim, encoder_dim)
         self.pred_layers = []
@@ -60,7 +61,6 @@ class EncoderPred(nn.Module):
                     causal=True,
                 )))
             # self.pred_layers.append(('BiasNorm%d'%i,BiasNorm(pred_bottleneck_dim)))
-            # self.pred_layers.append(('SwooshL%d'%i, SwooshL()))
         # self.pred_layers.append(('out_linear',nn.Linear(pred_bottleneck_dim, encoder_dim)))
         self.pred = nn.Sequential(OrderedDict(self.pred_layers))
 
@@ -70,6 +70,76 @@ class EncoderPred(nn.Module):
         self.pred_logp_ratio_clamp = pred_logp_ratio_clamp
 
         self.pred_detach = pred_detach
+
+    def chunk_logp_ratio(
+        self,
+        encoder_out: torch.Tensor,
+        encoder_target: torch.Tensor,
+        decoder_out: torch.Tensor,
+        project_input: bool = False,
+        preprocessed_encoder_out: bool = True,
+    ):
+        """
+        Args:
+            encoder_out:
+                Output from the encoder (projected already). Its shape is (N, chunk_size, E).
+            encoder_target:
+                Target encoder features (projected already). Its shape is (N, t<=chunk_size, E).
+            decoder_out:
+                Output from the decoder (projected already). Its shape is (N, 1, E).
+        Returns:
+            logp_ratio:
+                The log probability ratio. Its scalar.
+        """
+        assert project_input == False
+        assert encoder_out.ndim == 3, encoder_out.shape
+        assert encoder_target.ndim == 3, encoder_target.shape
+        assert decoder_out.ndim == 3, decoder_out.shape
+
+        N, chunk_size, E = encoder_out.shape
+        assert N==1, "Currently, only valid for batch size 1"
+        _, target_chunk_len, _ = encoder_target.shape
+
+        encoder_target = encoder_target / E**0.5  # (N, target_chunk_len, E)
+        if target_chunk_len < chunk_size:
+            encoder_target = torch.cat([
+                encoder_target,
+                torch.zeros(encoder_target.shape[0], chunk_size-target_chunk_len,
+                            E, device=encoder_out.device)
+            ], dim=1)  # (N, chunk_size, E)
+
+        input_denom = encoder_out  # (N, chunk_size, E)
+        input_numer = input_denom + decoder_out  # (N, chunk_size, E)
+
+        input_denom = input_denom.permute(1, 0, 2)  # (chunk_size, N, E)
+        input_numer = input_numer.permute(1, 0, 2)  # (chunk_size, N, E)
+
+        pred_next_denom = self.pred(input_denom)  # (chunk_size, N, E)
+        pred_next_numer = self.pred(input_numer)  # (chunk_size, N, E)
+        pred_next_denom = pred_next_denom.permute(1, 0, 2)  # (N, chunk_size, E)
+        pred_next_numer = pred_next_numer.permute(1, 0, 2)  # (N, chunk_size, E)
+        
+        l2_denom = torch.norm((pred_next_denom - encoder_target), p=2, dim=-1)  # (N, chunk_size, 1)
+        l2_numer = torch.norm((pred_next_numer - encoder_target), p=2, dim=-1)  # (N, chunk_size, 1)
+
+        target_mask = (torch.arange(chunk_size, device=encoder_out.device) \
+                        .expand(N, chunk_size) \
+                        < target_chunk_len) \
+                        .to(encoder_out.dtype)  # (N, chunk_size)
+        l2_denom = l2_denom * target_mask.unsqueeze(-1)  # (N, chunk_size, 1)
+        l2_numer = l2_numer * target_mask.unsqueeze(-1)  # (N, chunk_size, 1)
+
+        # calculate log-prob. ratio
+        if self.pred_l2_to_logp.startswith("Gaussian"):
+            # Assumed variance of 1
+            logp_denom = -0.5 * l2_denom ** 2  # (N, chunk_size, 1)
+            logp_numer = -0.5 * l2_numer ** 2  # (N, chunk_size, 1)
+            logp_ratio = logp_numer - logp_denom  # (N, chunk_size, 1)
+            logp_ratio = logp_ratio.sum()  # scalar
+        else:
+            assert False, "not implemented"
+
+        return logp_ratio
 
     def forward(
         self,
@@ -109,7 +179,7 @@ class EncoderPred(nn.Module):
 
         if project_input:
             # pruned encoder_out is duplicates of the same features on the label axis.
-            if self.pred_detach:
+            if self.pred_detach == 1:
                 encoder_out = encoder_out.detach()
                 decoder_out = decoder_out.detach()
 
@@ -135,8 +205,8 @@ class EncoderPred(nn.Module):
             input_denom = input_denom.permute(1, 0, 2, 3).reshape(T, N, B)
             input_numer = input_numer.permute(1, 0, 2, 3).reshape(T, N*s_range, B)
 
-            pred_next_denom = self.pred(input_denom)  # (T, N, 1, E)
-            pred_next_numer = self.pred(input_numer)  # (T, N, s_range, E)
+            pred_next_denom = self.pred(input_denom)  # (T, N, E)
+            pred_next_numer = self.pred(input_numer)  # (T, N*s_range, E)
 
             pred_next_denom = pred_next_denom.reshape(T, N, 1, -1).permute(1, 0, 2, 3)
             pred_next_numer = pred_next_numer.reshape(T, N, s_range, -1).permute(1, 0, 2, 3)
@@ -148,7 +218,8 @@ class EncoderPred(nn.Module):
             encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, s_range, E)
             encoder_target[:, -chunk_size:, :, :] = 0
             encoder_target = encoder_target / E**0.5
-            # encoder_target = encoder_target.detach()
+            if self.pred_detach >= 0:
+                encoder_target = encoder_target.detach()
             print('encoder_target norm', torch.norm(encoder_target[0,:5,0], p=2, dim=-1))
             print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
             print('pred_next_denom diff norm', torch.norm(pred_next_denom[0,:5,0] - encoder_target[0,:5,0], p=2, dim=-1))
@@ -194,11 +265,12 @@ class EncoderPred(nn.Module):
 
             # scale and clamp the log-prob. ratio
             logp_ratio = logp_ratio * self.pred_logp_scale
-            print('logp_ratio after scale', logp_ratio[0,chunk_size-1:chunk_size*3:chunk_size,0])
+            # print('logp_ratio after scale', logp_ratio[0,chunk_size-1:chunk_size*3:chunk_size,0])
             if self.pred_logp_ratio_clamp > 0:
                 logp_ratio = torch.clamp(logp_ratio,
                                         min=-self.pred_logp_ratio_clamp,
                                         max=self.pred_logp_ratio_clamp)
+            print('logp_ratio after scale-clamp', logp_ratio[0,chunk_size-1:chunk_size*3:chunk_size,0])
             
             # calculate loss functions for training encoder_prod
             # DEPRECATED: mean over valid time frames

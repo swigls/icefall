@@ -442,6 +442,8 @@ def decode_one_batch(
             encoder_out=encoder_out,
             encoder_out_lens=encoder_out_lens,
             beam=params.beam_size,
+            encoder_pred_logp_scale=params.encoder_pred_logp_scale \
+                if hasattr(params, "encoder_pred_logp_scale") else 0.,
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
@@ -463,6 +465,8 @@ def decode_one_batch(
                     model=model,
                     encoder_out=encoder_out_i,
                     beam=params.beam_size,
+                    epred_logp_scale=params.encoder_pred_logp_scale \
+                        if hasattr(params, "encoder_pred_logp_scale") else 0.,
                 )
             else:
                 raise ValueError(
@@ -659,6 +663,8 @@ def main():
         params.suffix += (
             f"-{params.decoding_method}-beam-size-{params.beam_size}"
         )
+        if params.encoder_pred_logp_scale != 0.:
+            params.suffix += f"-logp-scale-{params.encoder_pred_logp_scale:.0f}"
     else:
         params.suffix += f"-context-{params.context_size}"
         params.suffix += f"-max-sym-per-frame-{params.max_sym_per_frame}"

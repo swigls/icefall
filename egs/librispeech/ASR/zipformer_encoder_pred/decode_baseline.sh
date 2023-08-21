@@ -1,8 +1,9 @@
 dir=$( dirname -- "$0"; )
 
 #for m in greedy_search; do
-for m in greedy_search modified_beam_search; do
-  for epoch in 40; do
+#for m in greedy_search modified_beam_search; do
+for m in greedy_search; do
+  for epoch in 68; do
     for avg in 10; do
           CUDA_VISIBLE_DEVICES="0" ./$dir/decode.py \
             --epoch $epoch \
@@ -12,7 +13,7 @@ for m in greedy_search modified_beam_search; do
             --num-workers 8 \
             --chunk-size 8 \
             --left-context-frames 128 \
-            --exp-dir $dir/exp-chunk8-dur600-eval \
+            --exp-dir $dir/exp-chunk8-dur600 \
             --rnnt-type "regular" \
             --train-in-eval-mode 1 \
             --use-encoder-pred 0 \
