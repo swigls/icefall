@@ -20,6 +20,10 @@ from scaling import ScaledLinear, ScaledConv1d, SwooshL, BiasNorm
 from zipformer import ConvolutionModule
 from collections import OrderedDict
 
+from scaling_lstm import ScaledLSTM
+
+from typing import Optional
+
 
 class EncoderPred(nn.Module):
     def __init__(
@@ -35,6 +39,9 @@ class EncoderPred(nn.Module):
         pred_logp_scale: float,
         pred_logp_ratio_clamp: float,
         pred_l2_norm_loss: bool,
+        pred_enc_in_rnn: bool,
+        pred_dec_in_rnn: bool,
+        pred_dec_in_raw: bool,
     ):
         super().__init__()
 
@@ -42,7 +49,31 @@ class EncoderPred(nn.Module):
         
         self.encoder_proj = ScaledLinear(encoder_dim, pred_bottleneck_dim, initial_scale=0.25)
         self.decoder_proj = ScaledLinear(decoder_dim, pred_bottleneck_dim, initial_scale=0.25)
-    
+        if pred_enc_in_rnn:
+            self.pred_enc_in_rnn = ScaledLSTM(
+                input_size=encoder_dim,
+                hidden_size=encoder_dim,
+                proj_size=0,
+                num_layers=1,
+                dropout=0.0,
+                bidirectional=False,
+            )
+        else:
+            self.pred_enc_in_rnn = None
+        if pred_dec_in_rnn:
+            self.pred_dec_in_rnn = ScaledLSTM(
+                input_size=decoder_dim,
+                hidden_size=decoder_dim,
+                proj_size=0,
+                num_layers=1,
+                dropout=0.0,
+                bidirectional=False,
+            )
+        else:
+            self.pred_dec_in_rnn = None
+
+        self.pred_dec_in_raw = pred_dec_in_raw
+
         assert len(encoder.chunk_size) == 1, encoder.chunk_size
         chunk_size = encoder.chunk_size[0]
         half_kernel_size = (pred_kernel_size + 1) // 2
@@ -52,7 +83,7 @@ class EncoderPred(nn.Module):
 
         assert pred_bottleneck_dim==encoder_dim, (pred_bottleneck_dim, encoder_dim)
         self.pred_layers = []
-        self.pred_layers.append(('SwooshL_proj', SwooshL()))
+        #self.pred_layers.append(('SwooshL_proj', SwooshL()))
         for i in range(pred_num_layers):
             self.pred_layers.append(('ConvModule%d'%i,
                 ConvolutionModule(
@@ -147,6 +178,7 @@ class EncoderPred(nn.Module):
         encoder_out_lens: torch.Tensor,
         decoder_out: torch.Tensor,
         project_input: bool = True,
+        encoder_out_post: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -155,11 +187,13 @@ class EncoderPred(nn.Module):
           encoder_out_lens:
             Lengths of the encoder output. Its shape is (N,).
           decoder_out:
-            Output from the decoder. Its shape is (N, T, s_range, D).
+            Output from the decoder. Maybe post-processed by RNN. Its shape is (N, T, s_range, D).
           project_input:
             If true, apply input projections encoder_proj and decoder_proj.
             If this is false, it is the user's responsibility to do this
             manually.
+          encoder_out_post:
+            Output from the encoder. Maybe post-processed by RNN. Its shape is (N, T, s_range, E).
         Returns:
           logp_ratio:
             The log probability ratio. Its shape is (N, T, s_range).
@@ -179,12 +213,13 @@ class EncoderPred(nn.Module):
 
         if project_input:
             # pruned encoder_out is duplicates of the same features on the label axis.
-            if self.pred_detach == 1:
-                encoder_out = encoder_out.detach()
-                decoder_out = decoder_out.detach()
-
-            input_denom = self.encoder_proj(encoder_out[:, :, 0:1, :])  # (N, T, 1, B)
-            input_numer = input_denom + self.decoder_proj(decoder_out)  # (N, T, s_range, B)
+            # if self.pred_detach == 1:
+            #     encoder_out = encoder_out.detach()
+            #     decoder_out = decoder_out.detach()
+            if encoder_out_post is None:
+                encoder_out_post = encoder_out
+            input_denom = self.encoder_proj(encoder_out_post[:, :, 0:1, :])  # (N, T, 1, B)
+            input_numer = input_denom + self.decoder_proj(decoder_out)   # (N, T, s_range, B)
 
             # # roll the inputs to the right by one chunk
             # input_denom_roll = torch.roll(input_denom, shifts=chunk_size, dims=1)
@@ -218,8 +253,8 @@ class EncoderPred(nn.Module):
             encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, s_range, E)
             encoder_target[:, -chunk_size:, :, :] = 0
             encoder_target = encoder_target / E**0.5
-            if self.pred_detach >= 0:
-                encoder_target = encoder_target.detach()
+            # if self.pred_detach >= 0:
+            #     encoder_target = encoder_target.detach()
             print('encoder_target norm', torch.norm(encoder_target[0,:5,0], p=2, dim=-1))
             print('pred_next_denom norm', torch.norm(pred_next_denom[0,:5,0], p=2, dim=-1))
             print('pred_next_denom diff norm', torch.norm(pred_next_denom[0,:5,0] - encoder_target[0,:5,0], p=2, dim=-1))

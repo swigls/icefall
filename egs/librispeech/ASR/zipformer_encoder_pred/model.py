@@ -289,16 +289,52 @@ class AsrModel(nn.Module):
         logits = self.joiner(am_pruned, lm_pruned, project_input=False)
 
         if self.use_encoder_pred:
-            enc_pruned, dec_pruned = k2.do_rnnt_pruning(
+            # Preapre inputs of encoder_pred module
+            epred_enc_in = encoder_out  # [B, T, encoder_dim]
+            if True:
+              epred_dec_in = decoder_out  # [B, S + 1, decoder_dim]
+            else:
+              epred_dec_in = self.decoder.embedding(sos_y_padded.clamp(min=0)) \
+                * (sos_y_padded >= 0).unsqueeze(-1)
+            if self.encoder_pred.pred_detach == 1:
+              epred_enc_in = epred_enc_in.detach()
+              epred_dec_in = epred_dec_in.detach()
+              # requires_grad trick for LSTM input.
+              # backward gradients will not be propagated to inputs
+              epred_enc_in.requires_grad_(True)
+              epred_dec_in.requires_grad_(True)
+
+            # Optionally apply RNNs in encoder_pred module
+            if self.encoder_pred.pred_enc_in_rnn is not None:
+              self.encoder_pred.pred_enc_in_rnn.train()
+              epred_enc_in = self.encoder_pred.pred_enc_in_rnn(
+                  epred_enc_in.permute(1,0,2))[0].permute(1,0,2)  # [B, T, encoder_dim]
+            if self.encoder_pred.pred_dec_in_rnn is not None:
+              self.encoder_pred.pred_dec_in_rnn.train()
+              epred_dec_in = self.encoder_pred.pred_dec_in_rnn(
+                  epred_dec_in.permute(1,0,2))[0].permute(1,0,2)  # [B, S + 1, decoder_dim]
+
+            epred_enc_in_pruned, epred_dec_in_pruned = k2.do_rnnt_pruning(
+              am=epred_enc_in,
+              lm=epred_dec_in,
+              ranges=ranges,
+            )
+
+            # Prepare encoder_out_pruned before making target of encoder_pred module
+            encoder_out_pruned, _ = k2.do_rnnt_pruning(
               am=encoder_out,
               lm=decoder_out,
               ranges=ranges,
             )
-            logp_ratio, l2_numer, l2_denom = self.encoder_pred(
-                enc_pruned, encoder_out_lens, dec_pruned,
-                project_input=True,
-            )
+            if self.encoder_pred.pred_detach >= 0:
+              encoder_out_pruned = encoder_out_pruned.detach()
+
+            # Apply the encoder_pred module
             # logp_ratio: (B, T, prune_range)
+            logp_ratio, l2_numer, l2_denom = self.encoder_pred(
+                encoder_out_pruned, encoder_out_lens, epred_dec_in_pruned,
+                project_input=True, encoder_out_post=epred_enc_in_pruned,
+            )
 
         with torch.cuda.amp.autocast(enabled=False):
             pruned_loss = k2.rnnt_loss_pruned(

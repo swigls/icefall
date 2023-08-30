@@ -1,11 +1,11 @@
 ### TODO list
 * train.sh
 * encoder_pred.py
+    * Biggest problem: Why y_1:u not helpful for predicting h_t+1 given h_1:t?
     + Gaussian with stddev learnable?
 * model.py
     + apply py_add also to simple loss calculation? (seems not very necessary)
 
 Questions
-* Why decode scale is much larger (logp_scale should be much smaller)? 
-* Is the sign of logp_ratio wrong?
+* Why decode scale is much larger (logp_scale should be much smaller)?
 * Is code for encoder_prediction / l2_loss / logp_ratio all right?

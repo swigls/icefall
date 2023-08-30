@@ -344,6 +344,30 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         help="""Only used if --use-encoder-pred=True. If True, use L2-norm loss
                 instead of L2 loss (i.e., not squared)."""
     )
+
+    parser.add_argument(
+        "--encoder-pred-enc-in-rnn",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True.
+        Whether to use rnn for encoder-side input of encoder_pred module""",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-dec-in-rnn",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True.
+        Whether to use rnn for decoder-side input of encoder_pred module""",
+    )
+
+    parser.add_argument(
+        "--encoder-pred-dec-in-raw",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True. If True, use raw embedding
+        rather than decoder output for decoder-side input of encoder_pred module""",
+    )
     
     parser.add_argument(
         "--rnnt-type",
@@ -710,6 +734,9 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_logp_scale=params.encoder_pred_logp_scale,
         pred_logp_ratio_clamp=params.encoder_pred_logp_ratio_clamp,
         pred_l2_norm_loss=params.encoder_pred_l2_norm_loss,
+        pred_enc_in_rnn=params.encoder_pred_enc_in_rnn,
+        pred_dec_in_rnn=params.encoder_pred_dec_in_rnn,
+        pred_dec_in_raw=params.encoder_pred_dec_in_raw,
     )
     return encoder_pred
 
