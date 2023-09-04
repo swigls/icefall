@@ -2047,6 +2047,7 @@ class ConvolutionModule(nn.Module):
     """
     def __init__(
             self, channels: int, kernel_size: int, causal: bool,
+            fixed_chunk_size: Optional[int] = None,
     ) -> None:
         """Construct a ConvolutionModule object."""
         super(ConvolutionModule, self).__init__()
@@ -2055,6 +2056,7 @@ class ConvolutionModule(nn.Module):
 
         bottleneck_dim = channels
         self.causal = causal
+        self.fixed_chunk_size = fixed_chunk_size
 
         self.in_proj = nn.Linear(
             channels, 2 * bottleneck_dim,
@@ -2135,6 +2137,9 @@ class ConvolutionModule(nn.Module):
             Tensor: Output tensor (#time, batch, channels).
 
         """
+        if self.fixed_chunk_size is not None:
+            assert chunk_size == -1, "chunk_size is not supported when fixed_chunk_size is set"
+            chunk_size = self.fixed_chunk_size
 
         x = self.in_proj(x)  # (time, batch, 2*channels)
 

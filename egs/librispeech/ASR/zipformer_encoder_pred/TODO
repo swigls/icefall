@@ -1,7 +1,8 @@
 ### TODO list
 * train.sh
 * encoder_pred.py
-    * Biggest problem: Why y_1:u not helpful for predicting h_t+1 given h_1:t?
+    + encrnn
+    + nodetach
     + Gaussian with stddev learnable?
 * model.py
     + apply py_add also to simple loss calculation? (seems not very necessary)

@@ -1,10 +1,10 @@
 dir=$( dirname -- "$0"; )
 
 #for m in greedy_search modified_beam_search; do
-for m in beam_search; do
-  for epoch in 45; do
+for m in greedy_search; do
+  for epoch in 38; do
     for avg in 1; do
-          CUDA_VISIBLE_DEVICES="3" ./$dir/decode.py \
+          CUDA_VISIBLE_DEVICES="0" ./$dir/decode.py \
             --epoch $epoch \
             --avg $avg \
             --use-averaged-model 1 \

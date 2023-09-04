@@ -90,6 +90,7 @@ class EncoderPred(nn.Module):
                     channels=pred_bottleneck_dim,
                     kernel_size=pred_kernel_size,  # 7 in data2vec 2.0, where frame shift was 20 ms.
                     causal=True,
+                    fixed_chunk_size=chunk_size,
                 )))
             # self.pred_layers.append(('BiasNorm%d'%i,BiasNorm(pred_bottleneck_dim)))
         # self.pred_layers.append(('out_linear',nn.Linear(pred_bottleneck_dim, encoder_dim)))
@@ -281,8 +282,9 @@ class EncoderPred(nn.Module):
             # calculate log-prob. ratio
             if self.pred_l2_to_logp.startswith("Gaussian"):
                 # Assumed variance of 1
-                logp_denom = -0.5 * l2_denom ** 2  # (N, T, 1)
-                logp_numer = -0.5 * l2_numer ** 2  # (N, T, s_range)
+                stddev = 1.0
+                logp_denom = -0.5 * l2_denom ** 2 / stddev ** 2  # (N, T, 1)
+                logp_numer = -0.5 * l2_numer ** 2 / stddev ** 2  # (N, T, s_range)
                 ratio = logp_numer - logp_denom  # (N, T, s_range)
 
                 # At chunk endpoint, the logp_ratio value equals to the
@@ -291,7 +293,10 @@ class EncoderPred(nn.Module):
                 # because information gain occurs only at the end of every chunk
                 logp_ratio = torch.zeros_like(ratio)
                 # ratio = torch.nn.functional.pad(ratio, (0,0,0,-T%chunk_size))  # (N, [T], s_range)
-                ratio = ratio[:, T%chunk_size:]  # (N, [T], s_range)
+                #ratio = ratio[:, T%chunk_size:]  # (N, [T], s_range) -> wrong! What the H...
+                if T % chunk_size != 0:
+                    # Prune the last chunk_size frames out before reshape & summing
+                    ratio = ratio[:, :-T%chunk_size]  # (N, [T], s_range)
                 ratio = ratio.reshape(N, -1, chunk_size, s_range)  # (N, [T//C], C, s_range)
                 ratio = torch.sum(ratio, dim=2)  # (N, [T//C], s_range)
                 logp_ratio[:, chunk_size-1::chunk_size, :] = ratio
@@ -305,15 +310,11 @@ class EncoderPred(nn.Module):
                 logp_ratio = torch.clamp(logp_ratio,
                                         min=-self.pred_logp_ratio_clamp,
                                         max=self.pred_logp_ratio_clamp)
-            print('logp_ratio after scale-clamp', logp_ratio[0,chunk_size-1:chunk_size*3:chunk_size,0])
+            print('logp_ratio after scale-clamp', logp_ratio[0,chunk_size-1:chunk_size*5:chunk_size,0])
             
             # calculate loss functions for training encoder_prod
             # DEPRECATED: mean over valid time frames
             # NEW: mean over s_range, sum over valid time frames
-            # l2_denom = torch.sum(
-            #     torch.sum(l2_denom, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
-            # l2_numer = torch.sum(
-            #     torch.sum(l2_numer, dim=(-2,-1)) / torch.sum(encoder_mask, dim=-1))  # scalar
             if self.pred_l2_norm_loss:
                 l2_denom = torch.sum(torch.mean(l2_denom, dim=-1))
                 l2_numer = torch.sum(torch.mean(l2_numer, dim=-1))

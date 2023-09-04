@@ -291,11 +291,11 @@ class AsrModel(nn.Module):
         if self.use_encoder_pred:
             # Preapre inputs of encoder_pred module
             epred_enc_in = encoder_out  # [B, T, encoder_dim]
-            if True:
+            if not self.encoder_pred.pred_dec_in_raw:
               epred_dec_in = decoder_out  # [B, S + 1, decoder_dim]
             else:
               epred_dec_in = self.decoder.embedding(sos_y_padded.clamp(min=0)) \
-                * (sos_y_padded >= 0).unsqueeze(-1)
+                * (sos_y_padded >= 0).unsqueeze(-1)  # [B, S + 1, decoder_dim]
             if self.encoder_pred.pred_detach == 1:
               epred_enc_in = epred_enc_in.detach()
               epred_dec_in = epred_dec_in.detach()
