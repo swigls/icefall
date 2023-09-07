@@ -264,12 +264,8 @@ class EncoderPred(nn.Module):
 
 
             # Divide logp values by encoder_dim
-            logp_denom = logp_denom / E
-            logp_numer = logp_numer / E
-            
-            if encoder_target.get_device() == 0:
-                print('logp_denom', logp_denom[0,:5, 0, 0:5])
-                print('logp_numer', logp_denom[0,:5, 0, 0:5])
+            logp_denom = logp_denom
+            logp_numer = logp_numer        
             # At chunk endpoint, the logp_ratio value equals to the
             # sum of the logp_ratio values of the next chunk
             # Note that except t % C == -1, the logp_ratio value is zero
@@ -307,8 +303,9 @@ class EncoderPred(nn.Module):
                           .to(encoder_out.dtype)  # (N, T)
             logp_denom = logp_denom * target_mask.unsqueeze(-1)  # (N, T, 1)
             logp_numer = logp_numer * target_mask.unsqueeze(-1)  # (N, T, s_range)
-            loss_denom = -torch.sum(torch.mean(logp_denom, dim=-1))  # scalar
-            loss_numer = -torch.sum(torch.mean(logp_numer, dim=-1))  # scalar
+            loss_denom = -torch.sum(torch.mean(logp_denom, dim=-1)) / E  # scalar
+            loss_numer = -torch.sum(torch.mean(logp_numer, dim=-1)) / E  # scalar
+            # NOTE: loss_denom should be at least 2x smaller than l2 loss before.
         else:
             assert False, "not implemented"
 
