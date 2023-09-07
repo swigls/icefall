@@ -91,4 +91,6 @@ ENTRYPOINT cd /opt/k2; \
     /opt/nvidia/nvidia_entrypoint.sh
     
 
+RUN pip install normflows
+
 # WORKDIR /workspace/icefall

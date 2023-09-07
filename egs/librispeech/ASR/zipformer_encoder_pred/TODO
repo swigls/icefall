@@ -1,12 +1,17 @@
 ### TODO list
+! Theory is never wrong. 
+    => What I have to do is, just believe this and go forward experiments
 * train.sh
 * encoder_pred.py
-    + encrnn
-    + nodetach
-    + Gaussian with stddev learnable?
+    + More expressive H family
+        + Gaussian with stddev learnable?
+        + Normalizing flow
+    + More expressive NN
+        * Full conv rather than 
+    + Faster optimizable NN
+        + Fastly adapt to changing h_t
 * model.py
     + apply py_add also to simple loss calculation? (seems not very necessary)
 
 Questions
-* Why decode scale is much larger (logp_scale should be much smaller)?
-* Is code for encoder_prediction / l2_loss / logp_ratio all right?
+* Why pred norm is always smaller than target norm? Its weird.

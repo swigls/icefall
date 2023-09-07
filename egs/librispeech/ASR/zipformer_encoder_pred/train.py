@@ -370,6 +370,30 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
     
     parser.add_argument(
+        "--encoder-pred-flow-depth",
+        type=int,
+        default=0,
+        help="""Only used if --use-encoder-pred=True.
+        Number of flow (=MAF) layers in encoder_pred module""",
+    )
+        
+    parser.add_argument(
+        "--encoder-pred-flow-num-blocks",
+        type=int,
+        default=2,
+        help="""Only used if --use-encoder-pred=True.
+        Number of MAF blocks in each flow layer""",
+    )
+        
+    parser.add_argument(
+        "--encoder-pred-flow-hidden-dim",
+        type=int,
+        default=512,
+        help="""Only used if --use-encoder-pred=True.
+        Number hidden units in each MAF block""",
+    )
+    
+    parser.add_argument(
         "--rnnt-type",
         type=str,
         default="regular",
@@ -737,6 +761,9 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_enc_in_rnn=params.encoder_pred_enc_in_rnn,
         pred_dec_in_rnn=params.encoder_pred_dec_in_rnn,
         pred_dec_in_raw=params.encoder_pred_dec_in_raw,
+        pred_flow_depth=params.encoder_pred_flow_depth,
+        pred_flow_num_blocks=params.encoder_pred_flow_num_blocks,
+        pred_flow_hidden_dim=params.encoder_pred_flow_hidden_dim,
     )
     return encoder_pred
 

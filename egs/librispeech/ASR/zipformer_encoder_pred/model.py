@@ -321,6 +321,7 @@ class AsrModel(nn.Module):
             )
 
             # Prepare encoder_out_pruned before making target of encoder_pred module
+            # (which is used as target of encoder_pred module)
             encoder_out_pruned, _ = k2.do_rnnt_pruning(
               am=encoder_out,
               lm=decoder_out,
