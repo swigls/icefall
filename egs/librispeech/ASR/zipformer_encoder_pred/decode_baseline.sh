@@ -2,9 +2,9 @@ dir=$( dirname -- "$0"; )
 
 #for m in greedy_search modified_beam_search; do
 for m in greedy_search; do
-  for epoch in 46; do
+  for epoch in $(seq 92 100); do
     for avg in 1; do
-          CUDA_VISIBLE_DEVICES="3" ./$dir/decode.py \
+          CUDA_VISIBLE_DEVICES="1" ./$dir/decode.py \
             --epoch $epoch \
             --avg $avg \
             --use-averaged-model 1 \
@@ -12,8 +12,12 @@ for m in greedy_search; do
             --num-workers 8 \
             --chunk-size 8 \
             --left-context-frames 128 \
-            --exp-dir $dir/exp-chunk8-dur600-eval \
+            --exp-dir $dir/exp-small-from70-pr20 \
             --rnnt-type "regular" \
+            --num-encoder-layers 2,2,2,2,2,2 \
+            --feedforward-dim 512,768,768,768,768,768 \
+            --encoder-dim 192,256,256,256,256,256 \
+            --encoder-unmasked-dim 192,192,192,192,192,192 \
             --train-in-eval-mode 1 \
             --use-encoder-pred 0 \
             --encoder-pred-detach 1 \

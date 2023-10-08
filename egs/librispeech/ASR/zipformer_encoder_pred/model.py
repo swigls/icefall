@@ -42,6 +42,7 @@ class AsrModel(nn.Module):
         use_ctc: bool = False,
         use_encoder_pred: bool = False,
         rnnt_type: str = "regular",
+        no_prune: bool = False,
     ):
         """A joint CTC & Transducer ASR model.
 
@@ -100,12 +101,14 @@ class AsrModel(nn.Module):
             self.decoder = decoder
             self.joiner = joiner
 
-            self.simple_am_proj = ScaledLinear(
-                encoder_dim, vocab_size, initial_scale=0.25
-            )
-            self.simple_lm_proj = ScaledLinear(
-                decoder_dim, vocab_size, initial_scale=0.25
-            )
+            self.no_prune = no_prune
+            if not no_prune:
+              self.simple_am_proj = ScaledLinear(
+                  encoder_dim, vocab_size, initial_scale=0.25
+              )
+              self.simple_lm_proj = ScaledLinear(
+                  decoder_dim, vocab_size, initial_scale=0.25
+              )
         else:
             assert decoder is None
             assert joiner is None
@@ -190,6 +193,7 @@ class AsrModel(nn.Module):
 
     def forward_transducer(
         self,
+        x: torch.Tensor,
         encoder_out: torch.Tensor,
         encoder_out_lens: torch.Tensor,
         y: k2.RaggedTensor,
@@ -200,6 +204,8 @@ class AsrModel(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute Transducer loss.
         Args:
+          x:
+            The acoustic input, of shape (N, T', C').
           encoder_out:
             Encoder output, of shape (N, T, C).
           encoder_out_lens:
@@ -240,39 +246,46 @@ class AsrModel(nn.Module):
         boundary[:, 2] = y_lens
         boundary[:, 3] = encoder_out_lens
 
-        lm = self.simple_lm_proj(decoder_out)
-        am = self.simple_am_proj(encoder_out)
+        if not self.no_prune:
+          lm = self.simple_lm_proj(decoder_out)
+          am = self.simple_am_proj(encoder_out)
 
-        # if self.training and random.random() < 0.25:
-        #    lm = penalize_abs_values_gt(lm, 100.0, 1.0e-04)
-        # if self.training and random.random() < 0.25:
-        #    am = penalize_abs_values_gt(am, 30.0, 1.0e-04)
+          # if self.training and random.random() < 0.25:
+          #    lm = penalize_abs_values_gt(lm, 100.0, 1.0e-04)
+          # if self.training and random.random() < 0.25:
+          #    am = penalize_abs_values_gt(am, 30.0, 1.0e-04)
 
-        # TODO: encoder_pred w/ simple outputs
-        # if self.use_encoder_pred:
-        #     epm = self.encoder_pred()
+          # TODO: encoder_pred w/ simple outputs
+          # if self.use_encoder_pred:
+          #     epm = self.encoder_pred()
 
-        with torch.cuda.amp.autocast(enabled=False):
-            simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
-                lm=lm.float(),
-                am=am.float(),
-                symbols=y_padded,
-                termination_symbol=blank_id,
-                lm_only_scale=lm_scale,
-                am_only_scale=am_scale,
-                boundary=boundary,
-                reduction="sum",
-                rnnt_type=self.rnnt_type,
-                return_grad=True,
-            )
+          with torch.cuda.amp.autocast(enabled=False):
+              simple_loss, (px_grad, py_grad) = k2.rnnt_loss_smoothed(
+                  lm=lm.float(),
+                  am=am.float(),
+                  symbols=y_padded,
+                  termination_symbol=blank_id,
+                  lm_only_scale=lm_scale,
+                  am_only_scale=am_scale,
+                  boundary=boundary,
+                  reduction="sum",
+                  rnnt_type=self.rnnt_type,
+                  return_grad=True,
+              )
 
-        # ranges : [B, T, prune_range]
-        ranges = k2.get_rnnt_prune_ranges(
-            px_grad=px_grad,
-            py_grad=py_grad,
-            boundary=boundary,
-            s_range=prune_range,
-        )
+          # ranges : [B, T, prune_range]
+          ranges = k2.get_rnnt_prune_ranges(
+              px_grad=px_grad,
+              py_grad=py_grad,
+              boundary=boundary,
+              s_range=prune_range,
+          )
+        else:
+          simple_loss = torch.zeros(1, device=encoder_out.device, dtype=torch.float32)
+          # ranges : [B, T, prune_range]
+          ranges = torch.arange(
+              y_lens.max(), dtype=torch.int64, device=encoder_out.device
+          ).unsqueeze(0).unsqueeze(0).tile((encoder_out.size(0), encoder_out.size(1), 1))
 
         # am_pruned : [B, T, prune_range, encoder_dim]
         # lm_pruned : [B, T, prune_range, decoder_dim]
@@ -290,7 +303,11 @@ class AsrModel(nn.Module):
 
         if self.use_encoder_pred:
             # Preapre inputs of encoder_pred module
-            epred_enc_in = encoder_out  # [B, T, encoder_dim]
+            if not self.encoder_pred.pred_enc_in_raw:
+              epred_enc_in = encoder_out  # [B, T, encoder_dim]
+            else:
+              epred_enc_in = \
+                self.encoder_pred.input_reshape_to_enctime(x)  # [B, l+T, feat_dim*subsample_rate*chunk_size]
             if not self.encoder_pred.pred_dec_in_raw:
               epred_dec_in = decoder_out  # [B, S + 1, decoder_dim]
             else:
@@ -306,6 +323,7 @@ class AsrModel(nn.Module):
 
             # Optionally apply RNNs in encoder_pred module
             if self.encoder_pred.pred_enc_in_rnn is not None:
+              assert False, "Not implemented"
               self.encoder_pred.pred_enc_in_rnn.train()
               epred_enc_in = self.encoder_pred.pred_enc_in_rnn(
                   epred_enc_in.permute(1,0,2))[0].permute(1,0,2)  # [B, T, encoder_dim]
@@ -322,6 +340,7 @@ class AsrModel(nn.Module):
 
             # Prepare encoder_out_pruned before making target of encoder_pred module
             # (which is used as target of encoder_pred module)
+            '''
             encoder_out_pruned, _ = k2.do_rnnt_pruning(
               am=encoder_out,
               lm=decoder_out,
@@ -329,12 +348,13 @@ class AsrModel(nn.Module):
             )
             if self.encoder_pred.pred_detach >= 0:
               encoder_out_pruned = encoder_out_pruned.detach()
+            '''
 
             # Apply the encoder_pred module
             # logp_ratio: (B, T, prune_range)
             logp_ratio, l2_numer, l2_denom = self.encoder_pred(
-                encoder_out_pruned, encoder_out_lens, epred_dec_in_pruned,
-                project_input=True, encoder_out_post=epred_enc_in_pruned,
+                epred_enc_in_pruned, encoder_out_lens, epred_dec_in_pruned,
+                project_input=True,
             )
 
         with torch.cuda.amp.autocast(enabled=False):
@@ -407,6 +427,7 @@ class AsrModel(nn.Module):
         if self.use_transducer:                
             # Compute transducer loss
             transducer_out = self.forward_transducer(
+                x=x,
                 encoder_out=encoder_out,
                 encoder_out_lens=encoder_out_lens,
                 y=y.to(x.device),

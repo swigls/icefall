@@ -354,6 +354,15 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--encoder-pred-enc-in-raw",
+        type=str2bool,
+        default=False,
+        help="""Only used if --use-encoder-pred=True. If True, use raw acoustic
+        feature rather than encoder output for encoder-side input of encoder_pred module
+        (Important) Prediction target will be also changed to raw acoustic feature!""",
+    )
+
+    parser.add_argument(
         "--encoder-pred-dec-in-rnn",
         type=str2bool,
         default=False,
@@ -400,6 +409,12 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         help="""One of [regular, modified, constrained]"""
     )
 
+    parser.add_argument(
+        "--no-prune",
+        type=str2bool,
+        default=False,
+        help="If true, not use simple->prune pipeline rnnt loss. Just use full RNN-T loss.",
+    )
 
 
 
@@ -759,6 +774,7 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_logp_ratio_clamp=params.encoder_pred_logp_ratio_clamp,
         pred_l2_norm_loss=params.encoder_pred_l2_norm_loss,
         pred_enc_in_rnn=params.encoder_pred_enc_in_rnn,
+        pred_enc_in_raw=params.encoder_pred_enc_in_raw,
         pred_dec_in_rnn=params.encoder_pred_dec_in_rnn,
         pred_dec_in_raw=params.encoder_pred_dec_in_raw,
         pred_flow_depth=params.encoder_pred_flow_depth,
@@ -800,6 +816,7 @@ def get_model(params: AttributeDict) -> nn.Module:
         use_ctc=params.use_ctc,
         use_encoder_pred=params.use_encoder_pred,
         rnnt_type=params.rnnt_type,
+        no_prune=params.no_prune,
     )
     return model
 
@@ -977,14 +994,18 @@ def compute_loss(
             s = params.simple_loss_scale
             # take down the scale on the simple loss from 1.0 at the start
             # to params.simple_loss scale by warm_step.
-            simple_loss_scale = (
-                s if batch_idx_train >= warm_step
-                else 1.0 - (batch_idx_train / warm_step) * (1.0 - s)
-            )
-            pruned_loss_scale = (
-                1.0 if batch_idx_train >= warm_step
-                else 0.1 + 0.9 * (batch_idx_train / warm_step)
-            )
+            if not params.no_prune:
+                simple_loss_scale = (
+                    s if batch_idx_train >= warm_step
+                    else 1.0 - (batch_idx_train / warm_step) * (1.0 - s)
+                )
+                pruned_loss_scale = (
+                    1.0 if batch_idx_train >= warm_step
+                    else 0.1 + 0.9 * (batch_idx_train / warm_step)
+                )
+            else:
+                simple_loss_scale = 0.0
+                pruned_loss_scale = 1.0
             loss += (
                 simple_loss_scale * simple_loss
                 + pruned_loss_scale * pruned_loss
