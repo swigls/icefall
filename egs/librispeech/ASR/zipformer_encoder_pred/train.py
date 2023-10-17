@@ -363,6 +363,14 @@ def add_model_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--encoder-pred-noise",
+        type=float,
+        default=0.0,
+        help="""Only used if --use-encoder-pred=True. If > 0, add Gaussian noise
+        to encoder-side input of encoder_pred module""",
+    )
+
+    parser.add_argument(
         "--encoder-pred-dec-in-rnn",
         type=str2bool,
         default=False,
@@ -777,6 +785,7 @@ def get_encoder_pred_model(params: AttributeDict, encoder: nn.Module) -> nn.Modu
         pred_enc_in_raw=params.encoder_pred_enc_in_raw,
         pred_dec_in_rnn=params.encoder_pred_dec_in_rnn,
         pred_dec_in_raw=params.encoder_pred_dec_in_raw,
+        pred_noise=params.encoder_pred_noise,
         pred_flow_depth=params.encoder_pred_flow_depth,
         pred_flow_num_blocks=params.encoder_pred_flow_num_blocks,
         pred_flow_hidden_dim=params.encoder_pred_flow_hidden_dim,

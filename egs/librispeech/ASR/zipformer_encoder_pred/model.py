@@ -26,6 +26,7 @@ from encoder_interface import EncoderInterface
 from icefall.utils import add_sos, make_pad_mask
 from scaling import ScaledLinear
 
+from lhotse.dataset import SpecAugment
 
 class AsrModel(nn.Module):
     def __init__(
@@ -126,10 +127,17 @@ class AsrModel(nn.Module):
         if use_encoder_pred:
             assert encoder_pred is not None
             self.encoder_pred = encoder_pred
+            self.spec_aug = SpecAugment()
         else:
             assert encoder_pred is None
           
         self.rnnt_type = rnnt_type
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if "spec_aug" in state:
+          del state["spec_aug"]
+        return state
 
     def forward_encoder(
         self, x: torch.Tensor, x_lens: torch.Tensor
@@ -338,18 +346,6 @@ class AsrModel(nn.Module):
               ranges=ranges,
             )
 
-            # Prepare encoder_out_pruned before making target of encoder_pred module
-            # (which is used as target of encoder_pred module)
-            '''
-            encoder_out_pruned, _ = k2.do_rnnt_pruning(
-              am=encoder_out,
-              lm=decoder_out,
-              ranges=ranges,
-            )
-            if self.encoder_pred.pred_detach >= 0:
-              encoder_out_pruned = encoder_out_pruned.detach()
-            '''
-
             # Apply the encoder_pred module
             # logp_ratio: (B, T, prune_range)
             logp_ratio, l2_numer, l2_denom = self.encoder_pred(
@@ -419,7 +415,7 @@ class AsrModel(nn.Module):
         assert x.size(0) == x_lens.size(0) == y.dim0
 
         # Compute encoder outputs
-        encoder_out, encoder_out_lens = self.forward_encoder(x, x_lens)
+        encoder_out, encoder_out_lens = self.forward_encoder(self.spec_aug(x), x_lens)
 
         row_splits = y.shape.row_splits(1)
         y_lens = row_splits[1:] - row_splits[:-1]

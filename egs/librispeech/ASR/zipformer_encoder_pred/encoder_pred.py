@@ -45,6 +45,7 @@ class EncoderPred(nn.Module):
         pred_enc_in_raw: bool,
         pred_dec_in_rnn: bool,
         pred_dec_in_raw: bool,
+        pred_noise: float,
         pred_flow_depth: int,
         pred_flow_num_blocks: int,
         pred_flow_hidden_dim: int,
@@ -83,6 +84,7 @@ class EncoderPred(nn.Module):
 
         self.pred_enc_in_raw = pred_enc_in_raw
         self.pred_dec_in_raw = pred_dec_in_raw
+        self.pred_noise = pred_noise
 
         assert len(encoder.chunk_size) == 1, encoder.chunk_size
         chunk_size = encoder.chunk_size[0] // 2  # 20ms*8 == (20ms*2)*4
@@ -225,8 +227,9 @@ class EncoderPred(nn.Module):
         Args:
           encoder_out:
             Output from the encoder. Its shape is (N, T, s_range, E).
+            It can be raw acoustic features or encoder features.
           encoder_out_lens:
-            Lengths of the encoder output. Its shape is (N,).
+            Lengths corresponding to the encoder_out. Its shape is (N,).
           decoder_out:
             Output from the decoder. Maybe post-processed by RNN. Its shape is (N, T, s_range, D).
           project_input:
@@ -250,9 +253,14 @@ class EncoderPred(nn.Module):
         chunk_size = self.encoder.chunk_size[0] // 2  # 20ms*8 == (20ms*2)*4
         assert chunk_size > 0, chunk_size
 
+        encoder_out = encoder_out[:, :, 0:1]  # (N, T, 1, E)
+        if self.pred_noise > 0:
+            # add Gaussian noise to encoder_out
+            encoder_out = encoder_out + torch.randn_like(encoder_out) * self.pred_noise
+
         if project_input:
             # pruned encoder_out is duplicates of the same features on the label axis.
-            input_denom = self.encoder_proj(encoder_out[:, :, 0:1, :])  # (N, T, 1, B)
+            input_denom = self.encoder_proj(encoder_out)  # (N, T, 1, B)
             input_numer = input_denom + self.decoder_proj(decoder_out)   # (N, T, s_range, B)
 
             # There are two options of implementation
@@ -268,7 +276,7 @@ class EncoderPred(nn.Module):
             input_numer = input_numer.permute(1, 0, 2, 3).reshape(T, N*s_range, B)
 
             # roll the target encoder features to the left by one chunk
-            encoder_target = torch.roll(encoder_out[:,:,0:1], shifts=-chunk_size, dims=1)  # (N, T, 1, E)
+            encoder_target = torch.roll(encoder_out, shifts=-chunk_size, dims=1)  # (N, T, 1, E)
             encoder_target[:, -chunk_size:, :, :] = 0
 
             # Feed-forward prediction network to obtain the next-chunk context
